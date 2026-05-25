@@ -74,10 +74,15 @@ AIOS now separates computer-use work into planner, executor, perception, recipe,
 
 - `computer_use_strategy` chooses a primary controller and fallback path for the current goal.
 - `background_control_plan` ranks deep background channels: CDP/DOM for Chrome web apps, app scripting/adapters, AX semantic actions, visual grounding, then foreground coordinates as the last resort.
+- `background_capabilities` inspects which non-invasive channels are likely available for a target app.
+- `background_action` is the unified non-invasive executor: it tries CDP selector actions, JavaScript eval, AppleScript/SDEF, AX background locators, visual grounding, and only uses foreground visual actions when `allow_foreground=true`.
 - `visual_ground` turns a screenshot/window/image into ranked candidates from OCR text, rectangle detection, AX hints, and saliency regions.
+- `visual_analyze` adds a Peekaboo/Ghost-style VQA hook. Configure `AIOS_VISION_BASE_URL`, `AIOS_VISION_MODEL`, and optionally `AIOS_VISION_API_KEY` for an OpenAI-compatible vision sidecar; without it, the tool returns local grounding evidence.
+- `browser_cdp_observe`, `browser_cdp_act`, `browser_cdp_extract`, and `browser_cdp_wait` provide a Stagehand-like web-agent layer above raw CDP eval/click/type/read.
 - `app_skill_list` and `app_skill_suggest` expose app adapter manifests with tools, selectors, permissions, notes, and compatibility hooks.
-- `episode_recall` and `context_graph_query` recall previous task episodes and the local app/workflow graph.
-- `trajectory_get` and `trajectory_export` produce replayable timelines that can be inspected, resumed from, or promoted into recipes.
+- `app_skill_install` installs local app skill packages so adapters can grow outside the monolithic Swift tool list.
+- `memory_profile`, `episode_recall`, `context_graph_query`, and `context_graph_ingest` recall and strengthen durable task context.
+- `trajectory_get`, `trajectory_export`, `trajectory_session_export`, and `trajectory_replay_plan` produce replayable timelines and full replay-session artifacts.
 
 The practical boundary is explicit: macOS cannot make every arbitrary native, inactive, offscreen, non-AX surface controllable through a single public API. AIOS therefore uses the deepest available non-invasive channel first, and only falls back to foreground coordinate control when no semantic/background path exists.
 
@@ -93,6 +98,8 @@ swift run --disable-sandbox aios host
 The checkpoint includes the current `TaskPlan`, completed/failed/running step state, verification contracts, action count, and already-submitted external sends. This lets a resumed task continue from the pending or failed step without blindly repeating verified work or resending the same external message.
 
 Long waits use the runtime state machine instead of busy loops. The executor can call `runtime_pause` with `resume_after_seconds` or `resume_at`; the run is marked `paused` or `scheduled`, the checkpoint is persisted, and the same run id is requeued for the host/daemon when it is time to continue. The queue skips future scheduled items while still draining ready work.
+
+`runtime_schedule` and `runtime_status` expose the same durable state machine as tools. A long task can now be scheduled, inspected, resumed, and exported without needing to parse run folders manually.
 
 ## Memory
 
@@ -112,6 +119,7 @@ swift run --disable-sandbox aios tool memory_recall '{"query":"TextEdit input","
 swift run --disable-sandbox aios tool memory_recent '{"limit":10}'
 swift run --disable-sandbox aios tool episode_recall '{"query":"TextEdit export PDF","limit":3}'
 swift run --disable-sandbox aios tool context_graph_query '{"query":"Chrome","limit":10}'
+swift run --disable-sandbox aios tool memory_profile '{"query":"Chrome web automation","limit":5}'
 ```
 
 Memory rejects secret-like values such as passwords, bearer tokens, private keys, API keys, and payment terms. It is local runtime state, not source-controlled project data.
@@ -166,15 +174,21 @@ Recipes are now real step workflows, not only prompt templates. Each recipe can 
 - `fallbackTools`
 - `verifyExpression` clauses such as `success && evidence contains Created`
 - `recoverySteps`
+- `nextOnSuccess` / `nextOnFailure` branch targets
+- `loopUntil` and `maxIterations`
+- `stateWrites` emitted into the event stream
 - deterministic stop-on-failure behavior with structured evidence
 
 The executor is recipe-first: it receives local recipe suggestions in the task prompt and can call `recipe_suggest` / `recipe_execute` before falling back to manual app automation. A successful run can be promoted into a durable workflow program:
 
 ```bash
 swift run --disable-sandbox aios tool recipe_promote_run '{"run_id":"<run_id>","recipe_id":"learned-workflow"}'
+swift run --disable-sandbox aios tool recipe_compile '{"id":"learned-workflow"}'
+swift run --disable-sandbox aios tool recipe_refine '{"id":"learned-workflow","run_id":"<run_id>","success":true}'
 ```
 
 Promotion extracts successful `AppAction` / `Observation` pairs, infers placeholders, coalesces stable steps, and writes a versioned recipe draft with parameters, preconditions, postconditions, and success/failure counters.
+Compilation validates workflow-program shape before reuse; refinement increments versioned success/failure counters from real runs.
 
 ## Learning
 
@@ -265,7 +279,10 @@ swift run --disable-sandbox aios tool aios_find '{"query":"Send","role":"AXButto
 swift run --disable-sandbox aios tool visual_read '{"scope":"screen","max_results":5}'
 swift run --disable-sandbox aios tool visual_ground '{"scope":"screen","max_results":8}'
 swift run --disable-sandbox aios tool background_control_plan '{"goal":"use Chrome web app without stealing focus","app_name":"Chrome"}'
+swift run --disable-sandbox aios tool background_action '{"action":"read","query":"Send","app_name":"WeChat"}'
 swift run --disable-sandbox aios tool browser_cdp_status '{}'
+swift run --disable-sandbox aios tool browser_cdp_observe '{"query":"submit","max_results":10}'
+swift run --disable-sandbox aios tool runtime_status '{"run_id":"<run_id>"}'
 swift run --disable-sandbox aios "Create a TextEdit document with hello aios, save it to ~/Desktop/aios-demo.txt, and reveal it in Finder."
 ```
 
@@ -281,6 +298,8 @@ export AIOS_LLM_BASE_URL="https://api.example.com/v1"
 export AIOS_LLM_MODEL="example-chat-model"
 export AIOS_LLM_API_KEY="replace-with-your-local-key"
 export AIOS_MAX_STEPS="20"
+export AIOS_VISION_BASE_URL="https://vision-compatible.example.com/v1"
+export AIOS_VISION_MODEL="example-vision-model"
 ```
 
 `AIOS_LLM_BASE_URL` may be either the API root shown above or a full `/chat/completions` URL.
@@ -346,7 +365,11 @@ Universal macOS tools:
 - `visual_read`: OCR screen/window text and regions
 - `visual_click`: foreground coordinate click on a visual OCR match
 - `visual_ground`: OCR, rectangle, AX-hint, and saliency candidates for icon/canvas/layout grounding
+- `visual_analyze`: VQA/image reasoning through a configured vision sidecar, with local grounding fallback
 - `background_control_plan`: ranks CDP, scripting, AX, visual, and coordinate control channels for a task
+- `background_capabilities`
+- `background_appscript`
+- `background_action`
 - `browser_cdp_launch`: launches isolated Chrome with a remote debugging port
 - `browser_cdp_status`
 - `browser_cdp_tabs`
@@ -354,19 +377,32 @@ Universal macOS tools:
 - `browser_cdp_click`: DOM selector click without cursor/focus
 - `browser_cdp_type`: DOM selector text entry without screen focus
 - `browser_cdp_read`: read DOM text/value/html/attributes
+- `browser_cdp_observe`: Stagehand-style DOM observation with selector candidates
+- `browser_cdp_act`: selector/text resolved click/type/read/submit
+- `browser_cdp_extract`: structured page extraction
+- `browser_cdp_wait`: selector/text/url/expression waits
 - `memory_remember`
 - `memory_recall`
 - `memory_recent`
 - `episode_recall`
 - `context_graph_query`
+- `context_graph_ingest`
+- `memory_profile`
 - `recipe_list`
 - `recipe_suggest`
 - `recipe_execute`
 - `recipe_promote_run`
+- `recipe_compile`
+- `recipe_refine`
 - `app_skill_list`
 - `app_skill_suggest`
+- `app_skill_install`
 - `trajectory_get`
 - `trajectory_export`
+- `trajectory_session_export`
+- `trajectory_replay_plan`
+- `runtime_status`
+- `runtime_schedule`
 - `computer_use_strategy`
 - `learn_start`
 - `learn_record_tool`

@@ -1139,7 +1139,11 @@ struct TaskQueue {
         try FileManager.default.createDirectory(at: EventStore.queueURL, withIntermediateDirectories: true)
         let id = UUID().uuidString
         try write(id: id, goal: goal, notBefore: notBefore)
-        _ = try EventStore.createQueued(goal: goal, runID: id)
+        let store = try EventStore.createQueued(goal: goal, runID: id)
+        if let notBefore {
+            try? store.updateStatus("scheduled")
+            try? store.append("RunScheduled", ["not_before": notBefore])
+        }
         return id
     }
 
@@ -1772,6 +1776,26 @@ struct ContextGraphStore {
         return (Array(matched), Array(edges))
     }
 
+    static func ingest(
+        fromKind: String,
+        fromLabel: String,
+        toKind: String,
+        toLabel: String,
+        relation: String,
+        weight: Double = 1,
+        attributes: [String: String] = [:]
+    ) {
+        let now = isoDateString(Date())
+        var nodes = readNodes()
+        var edges = readEdges()
+        let fromID = "\(normalizeID(fromKind)):\(normalizeID(fromLabel))"
+        let toID = "\(normalizeID(toKind)):\(normalizeID(toLabel))"
+        upsertNode(&nodes, ContextNode(id: fromID, kind: fromKind, label: fromLabel, attributes: attributes, updatedAt: now))
+        upsertNode(&nodes, ContextNode(id: toID, kind: toKind, label: toLabel, attributes: attributes, updatedAt: now))
+        upsertEdge(&edges, ContextEdge(from: fromID, to: toID, relation: relation, weight: weight, updatedAt: now))
+        try? write(nodes: nodes, edges: edges)
+    }
+
     private static func readNodes() -> [ContextNode] {
         guard let data = try? Data(contentsOf: nodesURL),
               let nodes = try? JSONDecoder().decode([ContextNode].self, from: data)
@@ -1877,6 +1901,28 @@ struct AppSkillStore {
         return scored.sorted { $0.1 > $1.1 }.prefix(min(50, max(1, limit))).map(\.0)
     }
 
+    @discardableResult
+    static func install(_ skill: AppSkill) throws -> AppSkill {
+        try FileManager.default.createDirectory(at: EventStore.appSkillsURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(skill).write(to: EventStore.appSkillsURL.appendingPathComponent("\(skill.id).json"), options: [.atomic])
+        return skill
+    }
+
+    static func read(_ id: String) -> AppSkill? {
+        list().first { $0.id == id }
+    }
+
+    static func validate(_ skill: AppSkill, knownTools: Set<String>) -> [String] {
+        var issues: [String] = []
+        if skill.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { issues.append("id is empty") }
+        if skill.appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { issues.append("app_name is empty") }
+        let missingTools = skill.tools.filter { !knownTools.contains($0) }
+        if !missingTools.isEmpty { issues.append("unknown tools: \(missingTools.joined(separator: ","))") }
+        return issues
+    }
+
     private static func diskSkills() -> [AppSkill] {
         guard FileManager.default.fileExists(atPath: EventStore.appSkillsURL.path),
               let urls = try? FileManager.default.contentsOfDirectory(at: EventStore.appSkillsURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
@@ -1920,6 +1966,74 @@ struct TrajectoryStore {
         let url = EventStore.trajectoriesURL.appendingPathComponent("\(runID).json")
         try writeJSONObject(payload, to: url)
         return url
+    }
+
+    static func exportSession(runID: String) throws -> URL {
+        let summary = try EventStore.readSummary(runID: runID)
+        let rawEventsText = try EventStore.readEventsText(runID: runID)
+        let rawEvents = EpisodeStore.parseEvents(rawEventsText)
+        let runDir = EventStore.runsURL.appendingPathComponent(summary.id, isDirectory: true)
+        let checkpointStore = EventStore(
+            runID: summary.id,
+            goal: summary.goal,
+            dir: runDir,
+            eventsURL: URL(fileURLWithPath: summary.eventsPath),
+            summaryURL: runDir.appendingPathComponent("summary.json")
+        )
+        var checkpointPayload: Any = [:]
+        if let checkpoint = checkpointStore.loadCheckpoint(),
+           let data = try? JSONEncoder().encode(checkpoint),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            checkpointPayload = object
+        }
+        let screenshots = unique(rawEvents.flatMap { event in
+            [event["path"], event["image_path"], event["screenshot"]].compactMap { $0 }
+        })
+        let payload: [String: Any] = [
+            "schema": "aios.replay.session.v1",
+            "run_id": runID,
+            "goal": summary.goal,
+            "status": summary.status,
+            "exported_at": isoDateString(Date()),
+            "checkpoint": checkpointPayload,
+            "screenshots": screenshots,
+            "timeline": try summarize(runID: runID, limit: 2_000),
+            "events": rawEvents
+        ]
+        try FileManager.default.createDirectory(at: EventStore.trajectoriesURL, withIntermediateDirectories: true)
+        let url = EventStore.trajectoriesURL.appendingPathComponent("\(runID)-session.json")
+        try writeJSONObject(payload, to: url)
+        return url
+    }
+
+    static func replayPlan(runID: String, fromIndex: Int = 1, toIndex: Int? = nil) throws -> [[String: String]] {
+        let events = try summarize(runID: runID, limit: 2_000)
+        let end = toIndex ?? events.count
+        return events.compactMap { event in
+            guard let index = Int(event["index"] ?? ""),
+                  index >= max(1, fromIndex),
+                  index <= max(fromIndex, end),
+                  ["AppAction", "RecipeStep", "RecipeObservation", "Observation", "Verification"].contains(event["event"] ?? "")
+            else { return nil }
+            return [
+                "index": "\(index)",
+                "event": event["event"] ?? "",
+                "step_id": event["step_id"] ?? "",
+                "tool": event["tool"] ?? "",
+                "replay_hint": replayHint(for: event),
+                "evidence": event["evidence"] ?? ""
+            ]
+        }
+    }
+
+    private static func replayHint(for event: [String: String]) -> String {
+        if let tool = event["tool"], !tool.isEmpty {
+            if tool.hasPrefix("browser_cdp_") { return "Replay through CDP against the same URL/tab selector context." }
+            if tool.hasPrefix("aios_background_") { return "Replay as non-invasive AX action after re-locating the element." }
+            if tool.hasPrefix("visual_") { return "Re-ground the screenshot/window first; do not blindly reuse coordinates." }
+            return "Replay by calling \(tool) with the recorded or parameterized arguments."
+        }
+        return "Use surrounding AppAction/Observation events to reconstruct this step."
     }
 }
 
@@ -1995,6 +2109,11 @@ struct RecipeStep: Codable {
     let postconditions: [RecipeCondition]?
     let recoverySteps: [RecipeStep]?
     let timeout: Double?
+    let nextOnSuccess: String?
+    let nextOnFailure: String?
+    let loopUntil: RecipeCondition?
+    let maxIterations: Int?
+    let stateWrites: [String: String]?
 
     init(
         id: String,
@@ -2011,7 +2130,12 @@ struct RecipeStep: Codable {
         verifyExpression: String? = nil,
         postconditions: [RecipeCondition]? = nil,
         recoverySteps: [RecipeStep]? = nil,
-        timeout: Double? = nil
+        timeout: Double? = nil,
+        nextOnSuccess: String? = nil,
+        nextOnFailure: String? = nil,
+        loopUntil: RecipeCondition? = nil,
+        maxIterations: Int? = nil,
+        stateWrites: [String: String]? = nil
     ) {
         self.id = id
         self.title = title
@@ -2028,6 +2152,11 @@ struct RecipeStep: Codable {
         self.postconditions = postconditions
         self.recoverySteps = recoverySteps
         self.timeout = timeout
+        self.nextOnSuccess = nextOnSuccess
+        self.nextOnFailure = nextOnFailure
+        self.loopUntil = loopUntil
+        self.maxIterations = maxIterations
+        self.stateWrites = stateWrites
     }
 }
 
@@ -2303,11 +2432,93 @@ struct RecipeStore {
         let resolved = try resolvedParams(recipe: recipe, params: params)
         let tools = ToolRegistry()
         var results: [ToolResult] = []
-        for step in recipe.steps {
+
+        let recipePreconditions = try evaluateConditions(
+            recipe.preconditions,
+            phase: "recipe_precondition",
+            stepID: "recipe",
+            callIDPrefix: "recipe-\(recipe.id)-pre",
+            recipeID: recipe.id,
+            params: resolved,
+            tools: tools,
+            eventStore: eventStore
+        )
+        results.append(contentsOf: recipePreconditions.results)
+        guard recipePreconditions.ok else { return results }
+
+        let indexByID = Dictionary(uniqueKeysWithValues: recipe.steps.enumerated().map { ($0.element.id, $0.offset) })
+        var stepIndex = 0
+        var transitions = 0
+        var iterations: [String: Int] = [:]
+        let maxTransitions = max(100, recipe.steps.count * 12)
+        while stepIndex < recipe.steps.count && transitions < maxTransitions {
+            transitions += 1
+            let step = recipe.steps[stepIndex]
+            let iteration = (iterations[step.id] ?? 0) + 1
+            iterations[step.id] = iteration
+            let maxIterations = max(1, step.maxIterations ?? 1)
+            if iteration > maxIterations {
+                results.append(ToolResult(success: false, evidence: "Recipe step \(step.id) exceeded maxIterations=\(maxIterations).", error: "recipe_loop_limit"))
+                return results
+            }
+
             let stepResults = try executeStep(step, recipeID: recipe.id, params: resolved, tools: tools, eventStore: eventStore, prefix: "recipe")
             results.append(contentsOf: stepResults)
-            guard stepResults.last?.success == true else { return results }
+            let ok = stepResults.last?.success == true
+
+            if ok, let stateWrites = step.stateWrites, !stateWrites.isEmpty {
+                var fields = renderArguments(stateWrites, params: resolved).compactMapValues { string($0) }
+                fields["recipe_id"] = recipe.id
+                fields["step_id"] = step.id
+                try eventStore?.append("RecipeState", fields)
+            }
+
+            if ok, let loopUntil = step.loopUntil {
+                let loopCheck = try evaluateConditions(
+                    [loopUntil],
+                    phase: "loop_until",
+                    stepID: step.id,
+                    callIDPrefix: "recipe-\(step.id)-loop\(iteration)",
+                    recipeID: recipe.id,
+                    params: resolved,
+                    tools: tools,
+                    eventStore: eventStore
+                )
+                results.append(contentsOf: loopCheck.results)
+                if !loopCheck.ok {
+                    continue
+                }
+            }
+
+            if let nextID = ok ? step.nextOnSuccess : step.nextOnFailure {
+                if nextID.uppercased() == "END" { break }
+                guard let nextIndex = indexByID[nextID] else {
+                    results.append(ToolResult(success: false, evidence: "Recipe branch target \(nextID) was not found.", error: "recipe_branch_target_missing"))
+                    return results
+                }
+                stepIndex = nextIndex
+                continue
+            }
+
+            guard ok else { return results }
+            stepIndex += 1
         }
+        if transitions >= maxTransitions {
+            results.append(ToolResult(success: false, evidence: "Recipe exceeded transition limit.", error: "recipe_transition_limit"))
+            return results
+        }
+
+        let recipePostconditions = try evaluateConditions(
+            recipe.postconditions,
+            phase: "recipe_postcondition",
+            stepID: "recipe",
+            callIDPrefix: "recipe-\(recipe.id)-post",
+            recipeID: recipe.id,
+            params: resolved,
+            tools: tools,
+            eventStore: eventStore
+        )
+        results.append(contentsOf: recipePostconditions.results)
         return results
     }
 
@@ -2714,6 +2925,56 @@ struct RecipeStore {
         return try save(recipe)
     }
 
+    static func compile(recipeID: String) throws -> [[String: String]] {
+        let recipe = try read(recipeID)
+        let ids = Set(recipe.steps.map(\.id))
+        return recipe.steps.map { step in
+            let fallbacks = step.fallbackTools?.map(\.tool).joined(separator: ",") ?? ""
+            let branchOK = step.nextOnSuccess.map { ids.contains($0) || $0.uppercased() == "END" } ?? true
+            let branchFail = step.nextOnFailure.map { ids.contains($0) || $0.uppercased() == "END" } ?? true
+            return [
+                "id": step.id,
+                "title": step.title,
+                "tool": step.tool,
+                "preconditions": "\((step.preconditions ?? []).count)",
+                "postconditions": "\((step.postconditions ?? []).count)",
+                "fallbacks": fallbacks,
+                "next_on_success": step.nextOnSuccess ?? "",
+                "next_on_failure": step.nextOnFailure ?? "",
+                "loop_until": step.loopUntil?.description ?? "",
+                "max_iterations": "\(step.maxIterations ?? 1)",
+                "branch_valid": (branchOK && branchFail) ? "true" : "false"
+            ]
+        }
+    }
+
+    static func recordRunOutcome(recipeID: String, runID: String, success: Bool, notes: String = "") throws -> Recipe {
+        let existing = try read(recipeID)
+        let stamp = isoDateString(Date())
+        let updatedNotes = [
+            existing.notes,
+            "\(stamp): run=\(runID) outcome=\(success ? "success" : "failure") \(notes)"
+        ]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n")
+        let updated = Recipe(
+            id: existing.id,
+            title: existing.title,
+            version: (existing.version ?? 1) + 1,
+            goalTemplate: existing.goalTemplate,
+            parameters: existing.parameters,
+            requiredParams: existing.requiredParams,
+            preconditions: existing.preconditions,
+            postconditions: existing.postconditions,
+            appBindings: existing.appBindings,
+            notes: updatedNotes,
+            steps: existing.steps,
+            successCount: (existing.successCount ?? 0) + (success ? 1 : 0),
+            failureCount: (existing.failureCount ?? 0) + (success ? 0 : 1)
+        )
+        return try save(updated)
+    }
+
     private static func parameterize(_ value: String) -> String {
         let pathPattern = #"(/[^\s"'{}]+|\~/[^\s"'{}]+)"#
         var output = value.replacingOccurrences(of: pathPattern, with: "{{path}}", options: .regularExpression)
@@ -2756,7 +3017,12 @@ struct RecipeStore {
                 verifyExpression: step.verifyExpression,
                 postconditions: step.postconditions,
                 recoverySteps: step.recoverySteps,
-                timeout: step.timeout
+                timeout: step.timeout,
+                nextOnSuccess: step.nextOnSuccess,
+                nextOnFailure: step.nextOnFailure,
+                loopUntil: step.loopUntil,
+                maxIterations: step.maxIterations,
+                stateWrites: step.stateWrites
             ))
         }
         return output
@@ -3464,7 +3730,11 @@ struct E2ERunner {
                     "visual_read",
                     "visual_click",
                     "visual_ground",
+                    "visual_analyze",
                     "background_control_plan",
+                    "background_capabilities",
+                    "background_appscript",
+                    "background_action",
                     "browser_cdp_launch",
                     "browser_cdp_status",
                     "browser_cdp_tabs",
@@ -3472,17 +3742,30 @@ struct E2ERunner {
                     "browser_cdp_click",
                     "browser_cdp_type",
                     "browser_cdp_read",
+                    "browser_cdp_observe",
+                    "browser_cdp_act",
+                    "browser_cdp_extract",
+                    "browser_cdp_wait",
                     "recipe_suggest",
                     "recipe_promote_run",
+                    "recipe_compile",
+                    "recipe_refine",
                     "memory_remember",
                     "memory_recall",
                     "memory_recent",
                     "episode_recall",
                     "context_graph_query",
+                    "context_graph_ingest",
+                    "memory_profile",
                     "app_skill_list",
                     "app_skill_suggest",
+                    "app_skill_install",
                     "trajectory_get",
                     "trajectory_export",
+                    "trajectory_session_export",
+                    "trajectory_replay_plan",
+                    "runtime_status",
+                    "runtime_schedule",
                     "computer_use_strategy"
                 ]
                 let missing = required.filter { !names.contains($0) }
@@ -4037,6 +4320,8 @@ final class AIOSAppModel: ObservableObject {
     @Published var selectedEvents = ""
     @Published var checkpointText = ""
     @Published var trajectoryText = ""
+    @Published var replayPlanText = ""
+    @Published var strategyText = ""
     @Published var memoryText = ""
     @Published var appSkillsText = ""
     @Published var auditText = ""
@@ -4141,17 +4426,26 @@ final class AIOSAppModel: ObservableObject {
             selectedEvents = ""
             checkpointText = ""
             trajectoryText = ""
+            replayPlanText = ""
+            strategyText = ""
             return
         }
         selectedEvents = (try? EventStore.readEventsText(runID: selectedRunID)) ?? ""
+        let summary = try? EventStore.readSummary(runID: selectedRunID)
         let checkpointURL = EventStore.runsURL
             .appendingPathComponent(selectedRunID, isDirectory: true)
             .appendingPathComponent("checkpoint.json")
         checkpointText = (try? String(contentsOf: checkpointURL, encoding: .utf8)) ?? "暂无 checkpoint"
+        strategyText = jsonStringValue(ComputerUseStrategy.suggest(goal: summary?.goal ?? selectedEvents))
         if let events = try? TrajectoryStore.summarize(runID: selectedRunID, limit: 120) {
             trajectoryText = jsonStringValue(events)
         } else {
             trajectoryText = "暂无轨迹"
+        }
+        if let replay = try? TrajectoryStore.replayPlan(runID: selectedRunID, fromIndex: 1) {
+            replayPlanText = jsonStringValue(replay)
+        } else {
+            replayPlanText = "暂无 replay plan"
         }
     }
 
@@ -4204,6 +4498,17 @@ final class AIOSAppModel: ObservableObject {
 
     func openStateFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([EventStore.rootURL])
+    }
+
+    func exportReplaySession() {
+        guard !selectedRunID.isEmpty else { return }
+        do {
+            let url = try TrajectoryStore.exportSession(runID: selectedRunID)
+            status = "Replay session exported: \(url.path)"
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            status = error.localizedDescription
+        }
     }
 
     func runEval() {
@@ -4283,6 +4588,20 @@ struct AIOSAppView: View {
                     }
                     DisclosureGroup("驾驶舱") {
                         VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Strategy")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("导出 Replay Session") { model.exportReplaySession() }
+                            }
+                            ScrollView {
+                                Text(model.strategyText.isEmpty ? "暂无 strategy" : model.strategyText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 70)
                             Text("Checkpoint")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -4303,6 +4622,16 @@ struct AIOSAppView: View {
                                     .textSelection(.enabled)
                             }
                             .frame(height: 120)
+                            Text("Replay Plan")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.replayPlanText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 100)
                         }
                     }
                     DisclosureGroup("上下文") {
@@ -6063,9 +6392,9 @@ final class AgentLoop {
     Prefer dedicated app adapters for Finder, Safari, Chrome, WPS, LibreOffice, Preview, Notes, Mail, Calendar, Reminders, WeChat, Lark, QQ, Tencent Meeting, Baidu Netdisk, ToDesk, Docker, Shortcuts, and IDEs when they match the task.
     Before manual multi-step work, use recipe_suggest or the provided RecipeSuggestions and execute a matching recipe with recipe_execute when the required params are available. If no recipe fits or params are missing, continue manually and gather enough detail to make the workflow learnable.
     Use MemoryContext and memory_recall for stable user/app/workflow facts that may help the current task. Use memory_remember only for reusable, non-sensitive preferences or automation hints; never store passwords, tokens, keys, payment data, or private secrets.
-    Use computer_use_strategy and app_skill_suggest when the route is unclear. For browser/web app tasks, prefer browser_cdp_* DOM tools when a CDP endpoint is available; they can control tabs without cursor/focus. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, deep background channels (CDP or app scripting), background locator tools, foreground locator tools, visual grounding, menu/keyboard actions, and raw coordinates last.
+    Use computer_use_strategy, memory_profile, app_skill_suggest, and background_capabilities when the route is unclear. For browser/web app tasks, prefer browser_cdp_observe, browser_cdp_act, browser_cdp_extract, browser_cdp_wait, and other CDP tools when an endpoint is available; they can control tabs without cursor/focus. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background_action or direct CDP/app scripting, background locator tools, foreground locator tools, visual grounding/visual_analyze, menu/keyboard actions, and raw coordinates last.
     Before acting inside an app, call aios_automation_context or an app-specific observation tool to orient. Prefer aios_find, aios_inspect, aios_read, aios_background_click, aios_background_type, aios_click, aios_type, and aios_wait over coordinate tools. For long-running tasks, try the background tools first because they use AXPress/AXValue only and avoid stealing focus. Keep restore_focus=true unless the task explicitly needs the target app left focused.
-    For visual/canvas/icon-heavy interfaces, call visual_ground before visual_click; treat OCR-only matches as one signal, not the whole perception layer.
+    For visual/canvas/icon-heavy interfaces, call visual_ground or visual_analyze before visual_click; treat OCR-only matches as one signal, not the whole perception layer.
     For work that must wait on time or external state, call runtime_pause with a resume time instead of busy-waiting through many steps.
 
     After every meaningful action, use returned evidence or observation tools to verify progress. Call step_complete only when a step is verified. Use step_failed or plan_update for recovery. Call task_complete only after all requested delivery is done and verified.
@@ -6435,12 +6764,45 @@ final class ToolRegistry {
                 "path": schema("string", "Optional existing image path or screenshot output path."),
                 "max_results": schema("number", "Maximum candidates. Default 40.")
             ]),
+            tool("visual_analyze", "Ask a configured vision model/sidecar about a screenshot, window, or image; falls back to local visual_ground evidence when no vision endpoint is configured.", [
+                "prompt": schema("string", "Question or instruction for visual analysis."),
+                "query": schema("string", "Optional grounding query to include with local candidates."),
+                "app_name": schema("string", "Optional app window to capture."),
+                "bundle_id": schema("string", "Optional app bundle id."),
+                "scope": schema("string", "screen, window, or image."),
+                "path": schema("string", "Optional existing image path or screenshot output path."),
+                "max_results": schema("number", "Maximum local grounding candidates. Default 40.")
+            ], required: ["prompt"]),
             tool("background_control_plan", "Choose the deepest non-invasive control channel available for an app/task: CDP/DOM, app script, AX semantic, visual, or foreground coordinate fallback.", [
                 "goal": schema("string", "Task or step goal."),
                 "app_name": schema("string", "Optional app name."),
                 "bundle_id": schema("string", "Optional bundle id."),
                 "url": schema("string", "Optional browser URL context.")
             ], required: ["goal"]),
+            tool("background_capabilities", "Inspect the non-invasive control channels likely available for an app: CDP, AppleScript/SDEF, AX semantic, visual capture, and foreground fallback.", [
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "url": schema("string", "Optional URL context.")
+            ]),
+            tool("background_appscript", "Run AppleScript against a scriptable app without intentionally activating it. Use for native semantic background automation when SDEF exposes commands.", [
+                "script": schema("string", "AppleScript source to execute."),
+                "app_name": schema("string", "Optional app name for evidence/capability tracking."),
+                "bundle_id": schema("string", "Optional bundle id for evidence/capability tracking.")
+            ], required: ["script"]),
+            tool("background_action", "Execute one non-invasive action through the deepest available channel: CDP selector, AppleScript, AX background locator, or visual grounding. Foreground coordinates are opt-in only.", [
+                "action": schema("string", "click, type, read, eval, script, or verify."),
+                "goal": schema("string", "Task/step goal for channel selection."),
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "selector": schema("string", "Optional DOM CSS selector for browser/CDP."),
+                "query": schema("string", "Optional AX/visual query."),
+                "role": schema("string", "Optional AX role."),
+                "text": schema("string", "Text for type actions."),
+                "script": schema("string", "JavaScript or AppleScript source for eval/script actions."),
+                "url_contains": schema("string", "Optional CDP tab URL filter."),
+                "title_contains": schema("string", "Optional CDP tab title filter."),
+                "allow_foreground": schema("boolean", "Allow foreground visual/coordinate fallback. Default false.")
+            ], required: ["action"]),
             tool("browser_cdp_launch", "Launch an isolated Google Chrome profile with a remote debugging port for DOM/CDP background automation.", [
                 "port": schema("number", "Remote debugging port. Default 9222."),
                 "user_data_dir": schema("string", "Optional profile dir. Default under AIOS state."),
@@ -6489,6 +6851,46 @@ final class ToolRegistry {
                 "host": schema("string", "Host. Default 127.0.0.1."),
                 "port": schema("number", "Port. Default 9222.")
             ]),
+            tool("browser_cdp_observe", "Return a Stagehand-style DOM observation: visible interactive elements with stable selector candidates, text, roles, and bounds.", [
+                "query": schema("string", "Optional text/intent filter."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "max_results": schema("number", "Maximum elements. Default 80."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ]),
+            tool("browser_cdp_act", "Act on a web page through CDP using selector or observed text: click, type, read, or submit without using screen focus.", [
+                "action": schema("string", "click, type, read, or submit."),
+                "selector": schema("string", "Optional CSS selector."),
+                "query": schema("string", "Optional text/aria-label/name to resolve to a selector."),
+                "text": schema("string", "Text for type/submit actions."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ], required: ["action"]),
+            tool("browser_cdp_extract", "Extract structured text/links/forms from a page through CDP.", [
+                "selector": schema("string", "Root selector. Default body."),
+                "schema": schema("string", "Optional extraction target: summary, links, forms, tables, or text. Default summary."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ]),
+            tool("browser_cdp_wait", "Wait for a web condition through CDP: selector, text, url_contains, or expression.", [
+                "condition": schema("string", "selector, text, url_contains, or expression."),
+                "value": schema("string", "Expected selector/text/url substring/expression."),
+                "timeout": schema("number", "Seconds to wait. Default 15."),
+                "interval": schema("number", "Polling interval seconds. Default 0.5."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ], required: ["condition", "value"]),
             tool("memory_remember", "Persist a reusable local memory such as an app preference, locator hint, or workflow note. Never store passwords, tokens, keys, payment data, or private secrets.", [
                 "kind": schema("string", "Memory kind, e.g. user_preference, app_hint, workflow_hint. Default user_note."),
                 "scope": schema("string", "Scope such as global, automation, workflow, or completion. Default global."),
@@ -6514,6 +6916,18 @@ final class ToolRegistry {
                 "query": schema("string", "Search query. Empty returns recent graph nodes."),
                 "limit": schema("number", "Maximum nodes. Default 20.")
             ]),
+            tool("context_graph_ingest", "Manually add or strengthen a context graph relationship for durable task memory.", [
+                "from_kind": schema("string", "Source node kind, e.g. user, app, workflow, file, recipe."),
+                "from_label": schema("string", "Source node label."),
+                "to_kind": schema("string", "Target node kind."),
+                "to_label": schema("string", "Target node label."),
+                "relation": schema("string", "Relationship label."),
+                "weight": schema("number", "Edge weight increment. Default 1.")
+            ], required: ["from_kind", "from_label", "to_kind", "to_label", "relation"]),
+            tool("memory_profile", "Build a compact long-term context profile from memories, episodes, graph nodes, recipes, and app skills for a goal/app.", [
+                "query": schema("string", "Goal, project, app, or workflow query."),
+                "limit": schema("number", "Maximum items per source. Default 8.")
+            ]),
             tool("app_skill_list", "List app skill manifests with capabilities, tools, recipes, selectors, and permissions.", [
                 "query": schema("string", "Optional app/capability query."),
                 "limit": schema("number", "Maximum skills. Default 20.")
@@ -6522,6 +6936,18 @@ final class ToolRegistry {
                 "query": schema("string", "Task, app, or capability query."),
                 "limit": schema("number", "Maximum skills. Default 8.")
             ], required: ["query"]),
+            tool("app_skill_install", "Install or update an app skill manifest in the local app-skills directory.", [
+                "id": schema("string", "Skill id."),
+                "app_name": schema("string", "App display name."),
+                "bundle_id": schema("string", "App bundle id."),
+                "version": schema("string", "Skill version. Default 1."),
+                "capabilities": arraySchema("string", "Capability tags."),
+                "tools": arraySchema("string", "Tool names exposed by this skill."),
+                "recipes": arraySchema("string", "Recipe ids bundled/recommended by this skill."),
+                "selectors_json": schema("string", "Optional selectors map as JSON object string."),
+                "permissions": arraySchema("string", "Required macOS/app permissions."),
+                "notes": schema("string", "Skill notes.")
+            ], required: ["id", "app_name"]),
             tool("trajectory_get", "Return a replayable summarized trajectory for a prior run.", [
                 "run_id": schema("string", "Run id."),
                 "limit": schema("number", "Maximum events. Default 200.")
@@ -6529,11 +6955,38 @@ final class ToolRegistry {
             tool("trajectory_export", "Export a prior run trajectory to trajectories/<run_id>.json.", [
                 "run_id": schema("string", "Run id.")
             ], required: ["run_id"]),
+            tool("trajectory_session_export", "Export a full replay session with raw events, checkpoint, screenshots, and timeline.", [
+                "run_id": schema("string", "Run id.")
+            ], required: ["run_id"]),
+            tool("trajectory_replay_plan", "Create a replay plan from a prior trajectory slice without executing it.", [
+                "run_id": schema("string", "Run id."),
+                "from_index": schema("number", "First event index. Default 1."),
+                "to_index": schema("number", "Last event index. Default end.")
+            ], required: ["run_id"]),
             tool("recipe_promote_run", "Promote a successful run trajectory into a parameterized workflow recipe draft.", [
                 "run_id": schema("string", "Run id."),
                 "recipe_id": schema("string", "Optional recipe id."),
                 "title": schema("string", "Optional recipe title.")
             ], required: ["run_id"]),
+            tool("recipe_compile", "Inspect and validate a recipe as a workflow program with branches, loops, conditions, and fallbacks.", [
+                "id": schema("string", "Recipe id.")
+            ], required: ["id"]),
+            tool("recipe_refine", "Record a recipe run outcome and update versioned success/failure counters and notes.", [
+                "id": schema("string", "Recipe id."),
+                "run_id": schema("string", "Run id."),
+                "success": schema("boolean", "Whether the run succeeded."),
+                "notes": schema("string", "Optional refinement notes.")
+            ], required: ["id", "run_id", "success"]),
+            tool("runtime_status", "Inspect a run's durable state: summary, checkpoint, trajectory head/tail, and queued/scheduled state.", [
+                "run_id": schema("string", "Run id."),
+                "limit": schema("number", "Maximum trajectory events. Default 80.")
+            ], required: ["run_id"]),
+            tool("runtime_schedule", "Queue a new or existing run for immediate or delayed execution.", [
+                "goal": schema("string", "Goal for a new run, or fallback goal for existing run."),
+                "run_id": schema("string", "Optional existing run id to requeue."),
+                "resume_after_seconds": schema("number", "Optional delay in seconds."),
+                "resume_at": schema("string", "Optional ISO-8601 resume time.")
+            ]),
             tool("computer_use_strategy", "Return the recommended planner/executor/perception/recipe/runtime strategy for a goal.", [
                 "goal": schema("string", "Task goal."),
                 "app": schema("string", "Optional app context.")
@@ -6901,8 +7354,16 @@ final class ToolRegistry {
                 return try visualClick(call.arguments)
             case "visual_ground":
                 return try visualGround(call.arguments)
+            case "visual_analyze":
+                return try visualAnalyze(call.arguments)
             case "background_control_plan":
                 return backgroundControlPlan(call.arguments)
+            case "background_capabilities":
+                return backgroundCapabilities(call.arguments)
+            case "background_appscript":
+                return try backgroundAppScript(call.arguments)
+            case "background_action":
+                return try backgroundAction(call.arguments)
             case "browser_cdp_launch":
                 return try browserCDPLaunch(call.arguments)
             case "browser_cdp_status":
@@ -6917,6 +7378,14 @@ final class ToolRegistry {
                 return try browserCDPType(call.arguments)
             case "browser_cdp_read":
                 return try browserCDPRead(call.arguments)
+            case "browser_cdp_observe":
+                return try browserCDPObserve(call.arguments)
+            case "browser_cdp_act":
+                return try browserCDPAct(call.arguments)
+            case "browser_cdp_extract":
+                return try browserCDPExtract(call.arguments)
+            case "browser_cdp_wait":
+                return try browserCDPWait(call.arguments)
             case "memory_remember":
                 return try memoryRememberTool(call.arguments)
             case "memory_recall":
@@ -6927,16 +7396,34 @@ final class ToolRegistry {
                 return episodeRecallTool(call.arguments)
             case "context_graph_query":
                 return contextGraphQueryTool(call.arguments)
+            case "context_graph_ingest":
+                return try contextGraphIngestTool(call.arguments)
+            case "memory_profile":
+                return memoryProfileTool(call.arguments)
             case "app_skill_list":
                 return appSkillListTool(call.arguments)
             case "app_skill_suggest":
                 return appSkillSuggestTool(call.arguments)
+            case "app_skill_install":
+                return try appSkillInstallTool(call.arguments)
             case "trajectory_get":
                 return try trajectoryGetTool(call.arguments)
             case "trajectory_export":
                 return try trajectoryExportTool(call.arguments)
+            case "trajectory_session_export":
+                return try trajectorySessionExportTool(call.arguments)
+            case "trajectory_replay_plan":
+                return try trajectoryReplayPlanTool(call.arguments)
             case "recipe_promote_run":
                 return try recipePromoteRunTool(call.arguments)
+            case "recipe_compile":
+                return try recipeCompileTool(call.arguments)
+            case "recipe_refine":
+                return try recipeRefineTool(call.arguments)
+            case "runtime_status":
+                return try runtimeStatusTool(call.arguments)
+            case "runtime_schedule":
+                return try runtimeScheduleTool(call.arguments)
             case "computer_use_strategy":
                 return computerUseStrategyTool(call.arguments)
             case "recipe_list":
@@ -8369,6 +8856,30 @@ final class ToolRegistry {
         return String(format: "%.2f", min(0.95, 0.35 + Double(hits) * 0.15))
     }
 
+    private func visualAnalyze(_ args: [String: Any]) throws -> ToolResult {
+        guard let prompt = string(args["prompt"]), !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError("prompt is required")
+        }
+        let capture = try captureVisualSource(args)
+        var groundingArgs = args
+        groundingArgs["path"] = capture.path
+        groundingArgs["scope"] = "image"
+        let grounding = try visualGround(groundingArgs)
+        if VisionSidecar.isConfigured {
+            let answer = try VisionSidecar.analyze(imagePath: capture.path, prompt: prompt)
+            return ToolResult(success: true, evidence: "Analyzed visual source with configured vision sidecar.", data: [
+                "answer": answer,
+                "image_path": capture.path,
+                "grounding": grounding.data["candidates"] ?? ""
+            ])
+        }
+        return ToolResult(success: grounding.success, evidence: "No AIOS_VISION_* endpoint configured; returned local grounding as visual analysis fallback.", data: [
+            "answer": "Local fallback only. Configure AIOS_VISION_BASE_URL and AIOS_VISION_MODEL for VQA/image-button/layout reasoning.",
+            "image_path": capture.path,
+            "grounding": grounding.data["candidates"] ?? ""
+        ], error: grounding.success ? nil : grounding.error)
+    }
+
     private func backgroundControlPlan(_ args: [String: Any]) -> ToolResult {
         let goal = string(args["goal"]) ?? ""
         let app = string(args["app_name"]) ?? string(args["bundle_id"]) ?? ""
@@ -8388,6 +8899,164 @@ final class ToolRegistry {
             "strategy": jsonStringValue(strategy),
             "channels": jsonStringValue(channels)
         ])
+    }
+
+    private func backgroundCapabilities(_ args: [String: Any]) -> ToolResult {
+        let appName = string(args["app_name"]) ?? ""
+        let bundleID = string(args["bundle_id"]) ?? ""
+        let url = string(args["url"]) ?? ""
+        let text = normalizeForSearch([appName, bundleID, url].joined(separator: " "))
+        var channels: [[String: String]] = []
+        if text.contains("chrome") || text.contains("com.google.chrome") || text.contains("http") || text.contains("web") {
+            let cdp = browserCDPStatus(args)
+            channels.append([
+                "channel": "browser_cdp_dom",
+                "available": cdp.success ? "true" : "false",
+                "depth": "deep_background",
+                "reason": cdp.success ? "Chrome DevTools Protocol endpoint is reachable." : "Launch browser_cdp_launch or an existing remote-debugging Chrome."
+            ])
+        }
+        if !appName.isEmpty || !bundleID.isEmpty {
+            let probe = !bundleID.isEmpty ? scriptingBridgeProbe(["bundle_id": bundleID]) : ToolResult(success: false, evidence: "bundle_id not provided")
+            channels.append([
+                "channel": "app_script_or_scripting_bridge",
+                "available": probe.success ? "true" : "unknown",
+                "depth": "semantic_background",
+                "reason": probe.evidence
+            ])
+            let ax = AIOSAutomationService.shared.context(args: args)
+            channels.append([
+                "channel": "accessibility_semantic",
+                "available": ax.success ? "true" : "unknown",
+                "depth": "non_intrusive_ax",
+                "reason": ax.evidence
+            ])
+        }
+        channels.append([
+            "channel": "visual_grounding",
+            "available": "true",
+            "depth": "perception_fallback",
+            "reason": "Can capture screen/window/image and ground candidates; direct foreground action is still opt-in."
+        ])
+        channels.append([
+            "channel": "foreground_coordinate",
+            "available": "opt_in",
+            "depth": "last_resort",
+            "reason": "Works broadly but can move cursor/focus."
+        ])
+        return ToolResult(success: true, evidence: "Inspected background control capabilities.", data: [
+            "app_name": appName,
+            "bundle_id": bundleID,
+            "channels": jsonStringValue(channels)
+        ])
+    }
+
+    private func backgroundAppScript(_ args: [String: Any]) throws -> ToolResult {
+        guard let script = string(args["script"]), !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError("script is required")
+        }
+        let output = try runProcess("/usr/bin/osascript", ["-e", script])
+        return ToolResult(success: true, evidence: "Executed AppleScript without an explicit app activation.", data: [
+            "channel": "app_script_or_scripting_bridge",
+            "app_name": string(args["app_name"]) ?? "",
+            "bundle_id": string(args["bundle_id"]) ?? "",
+            "output": truncateMiddle(output, maxCharacters: 8_000)
+        ])
+    }
+
+    private func backgroundAction(_ args: [String: Any]) throws -> ToolResult {
+        let action = normalizeForSearch(string(args["action"]) ?? "")
+        var tried: [[String: String]] = []
+        func annotate(_ result: ToolResult, channel: String) -> ToolResult {
+            var data = result.data
+            data["channel"] = channel
+            data["tried"] = jsonStringValue(tried)
+            return ToolResult(success: result.success, evidence: result.evidence, data: data, error: result.error, suggestion: result.suggestion)
+        }
+
+        if let selector = string(args["selector"]), !selector.isEmpty {
+            tried.append(["channel": "browser_cdp_dom", "reason": "selector provided"])
+            var cdpArgs = args
+            cdpArgs["selector"] = selector
+            do {
+                switch action {
+                case "click":
+                    return annotate(try browserCDPClick(cdpArgs), channel: "browser_cdp_dom")
+                case "type":
+                    return annotate(try browserCDPType(cdpArgs), channel: "browser_cdp_dom")
+                case "read", "verify":
+                    return annotate(try browserCDPRead(cdpArgs), channel: "browser_cdp_dom")
+                default:
+                    break
+                }
+            } catch {
+                tried.append(["channel": "browser_cdp_dom", "error": error.localizedDescription])
+            }
+        }
+
+        if action == "eval", let script = string(args["script"]), !script.isEmpty {
+            tried.append(["channel": "browser_cdp_dom", "reason": "javascript eval requested"])
+            var cdpArgs = args
+            cdpArgs["script"] = script
+            do {
+                return annotate(try browserCDPEval(cdpArgs), channel: "browser_cdp_dom")
+            } catch {
+                tried.append(["channel": "browser_cdp_dom", "error": error.localizedDescription])
+            }
+        }
+
+        if action == "script", let script = string(args["script"]), !script.isEmpty {
+            tried.append(["channel": "app_script_or_scripting_bridge", "reason": "AppleScript requested"])
+            do {
+                return annotate(try backgroundAppScript(args), channel: "app_script_or_scripting_bridge")
+            } catch {
+                tried.append(["channel": "app_script_or_scripting_bridge", "error": error.localizedDescription])
+            }
+        }
+
+        if let query = string(args["query"]), !query.isEmpty {
+            tried.append(["channel": "accessibility_semantic", "reason": "AX query provided"])
+            var axArgs = args
+            axArgs["query"] = query
+            switch action {
+            case "click":
+                let result = AIOSAutomationService.shared.backgroundClick(args: axArgs)
+                if result.success { return annotate(result, channel: "accessibility_semantic") }
+                tried.append(["channel": "accessibility_semantic", "error": result.error ?? result.evidence])
+            case "type":
+                let result = AIOSAutomationService.shared.backgroundType(args: axArgs)
+                if result.success { return annotate(result, channel: "accessibility_semantic") }
+                tried.append(["channel": "accessibility_semantic", "error": result.error ?? result.evidence])
+            case "read", "verify":
+                let result = AIOSAutomationService.shared.read(args: axArgs)
+                if result.success { return annotate(result, channel: "accessibility_semantic") }
+                tried.append(["channel": "accessibility_semantic", "error": result.error ?? result.evidence])
+            default:
+                break
+            }
+
+            let grounding = try visualGround(args)
+            tried.append(["channel": "visual_grounding", "reason": grounding.evidence])
+            if grounding.success, action == "verify" || action == "read" {
+                return annotate(grounding, channel: "visual_grounding")
+            }
+            if grounding.success, bool(args["allow_foreground"]) == true, action == "click" {
+                tried.append(["channel": "foreground_coordinate", "reason": "allow_foreground=true"])
+                return annotate(try visualClick(args), channel: "foreground_coordinate")
+            }
+        }
+
+        return ToolResult(
+            success: false,
+            evidence: "No non-invasive channel completed the background action.",
+            data: [
+                "action": action,
+                "plan": backgroundControlPlan(args).data["channels"] ?? "",
+                "tried": jsonStringValue(tried)
+            ],
+            error: "background_action_unavailable",
+            suggestion: "Provide a CDP selector, an AppleScript script, an AX query, or set allow_foreground=true for visual coordinate fallback."
+        )
     }
 
     private func browserCDPLaunch(_ args: [String: Any]) throws -> ToolResult {
@@ -8505,6 +9174,169 @@ final class ToolRegistry {
         return ToolResult(success: ok, evidence: ok ? "Read DOM selector through CDP." : "DOM selector not found.", data: result.data, error: ok ? nil : "selector_not_found")
     }
 
+    private func browserCDPObserve(_ args: [String: Any]) throws -> ToolResult {
+        let query = string(args["query"]) ?? ""
+        let maxResults = int(args["max_results"]) ?? 80
+        let script = """
+        (() => {
+          const q = \(javascriptLiteral(query)).toLowerCase();
+          const max = \(max(1, min(300, maxResults)));
+          const selectorFor = (el) => {
+            if (el.id) return "#" + CSS.escape(el.id);
+            const test = (s) => { try { return document.querySelectorAll(s).length === 1; } catch { return false; } };
+            const attrs = ["data-testid","data-test","aria-label","name","title","placeholder"];
+            for (const attr of attrs) {
+              const v = el.getAttribute(attr);
+              if (v) {
+                const s = el.tagName.toLowerCase() + "[" + attr + "=" + JSON.stringify(v) + "]";
+                if (test(s)) return s;
+              }
+            }
+            let path = el.tagName.toLowerCase();
+            let node = el;
+            while (node && node.parentElement && path.length < 220) {
+              const parent = node.parentElement;
+              const siblings = [...parent.children].filter(x => x.tagName === node.tagName);
+              const part = node.tagName.toLowerCase() + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : "");
+              path = part + " > " + path;
+              if (test(path)) return path;
+              node = parent;
+            }
+            return path;
+          };
+          const nodes = [...document.querySelectorAll("a,button,input,textarea,select,[role],[contenteditable=true],[tabindex],summary,label")];
+          const viewport = {w: innerWidth, h: innerHeight};
+          const out = [];
+          for (const el of nodes) {
+            const r = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            const label = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("name") || el.getAttribute("title") || el.getAttribute("placeholder") || "").trim().replace(/\\s+/g, " ").slice(0, 300);
+            const hay = [label, el.tagName, el.getAttribute("role") || "", el.type || ""].join(" ").toLowerCase();
+            if (q && !hay.includes(q)) continue;
+            if (r.width <= 0 || r.height <= 0 || style.visibility === "hidden" || style.display === "none") continue;
+            out.push({
+              selector: selectorFor(el),
+              tag: el.tagName.toLowerCase(),
+              role: el.getAttribute("role") || "",
+              type: el.type || "",
+              text: label,
+              x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height),
+              visible: r.bottom >= 0 && r.right >= 0 && r.top <= viewport.h && r.left <= viewport.w
+            });
+            if (out.length >= max) break;
+          }
+          return {ok:true, url: location.href, title: document.title, elements: out};
+        })()
+        """
+        var evalArgs = args
+        evalArgs["script"] = script
+        let result = try browserCDPEval(evalArgs)
+        return ToolResult(success: true, evidence: "Observed interactive DOM elements through CDP.", data: result.data)
+    }
+
+    private func browserCDPAct(_ args: [String: Any]) throws -> ToolResult {
+        let action = normalizeForSearch(string(args["action"]) ?? "")
+        var selector = string(args["selector"]) ?? ""
+        if selector.isEmpty, let query = string(args["query"]), !query.isEmpty {
+            let script = """
+            (() => {
+              const q = \(javascriptLiteral(query)).toLowerCase();
+              const nodes = [...document.querySelectorAll("a,button,input,textarea,select,[role],[contenteditable=true],[tabindex],summary,label")];
+              const selectorFor = (el) => {
+                if (el.id) return "#" + CSS.escape(el.id);
+                const attrs = ["data-testid","data-test","aria-label","name","title","placeholder"];
+                for (const attr of attrs) {
+                  const v = el.getAttribute(attr);
+                  if (v) return el.tagName.toLowerCase() + "[" + attr + "=" + JSON.stringify(v) + "]";
+                }
+                return el.tagName.toLowerCase();
+              };
+              const found = nodes.find(el => ((el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("name") || el.getAttribute("title") || el.getAttribute("placeholder") || "").toLowerCase()).includes(q));
+              return found ? {ok:true, selector: selectorFor(found)} : {ok:false};
+            })()
+            """
+            var evalArgs = args
+            evalArgs["script"] = script
+            let resolved = try browserCDPEval(evalArgs)
+            if let result = resolved.data["result"],
+               let data = result.data(using: .utf8),
+               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let resolvedSelector = raw["selector"] as? String {
+                selector = resolvedSelector
+            }
+        }
+        guard !selector.isEmpty else {
+            return ToolResult(success: false, evidence: "Could not resolve a DOM selector for browser action.", error: "selector_required")
+        }
+        var nextArgs = args
+        nextArgs["selector"] = selector
+        switch action {
+        case "click":
+            return try browserCDPClick(nextArgs)
+        case "type", "submit":
+            if action == "submit" { nextArgs["submit"] = true }
+            return try browserCDPType(nextArgs)
+        case "read":
+            return try browserCDPRead(nextArgs)
+        default:
+            return ToolResult(success: false, evidence: "Unsupported browser_cdp_act action \(action).", error: "unsupported_action")
+        }
+    }
+
+    private func browserCDPExtract(_ args: [String: Any]) throws -> ToolResult {
+        let selector = string(args["selector"]) ?? "body"
+        let schemaName = normalizeForSearch(string(args["schema"]) ?? "summary")
+        let script = """
+        (() => {
+          const root = document.querySelector(\(javascriptLiteral(selector)));
+          if (!root) return {ok:false, error:"selector_not_found"};
+          const text = (root.innerText || root.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 12000);
+          const links = [...root.querySelectorAll("a[href]")].slice(0,80).map(a => ({text:(a.innerText||"").trim().slice(0,200), href:a.href}));
+          const forms = [...root.querySelectorAll("form")].slice(0,20).map(f => ({text:(f.innerText||"").trim().slice(0,500), inputs:[...f.querySelectorAll("input,textarea,select")].map(i => ({name:i.name||"", type:i.type||i.tagName.toLowerCase(), placeholder:i.placeholder||"", value:i.value||""}))}));
+          const tables = [...root.querySelectorAll("table")].slice(0,20).map(t => (t.innerText||"").trim().slice(0,2000));
+          return {ok:true, schema:\(javascriptLiteral(schemaName)), title:document.title, url:location.href, text, links, forms, tables};
+        })()
+        """
+        var evalArgs = args
+        evalArgs["script"] = script
+        let result = try browserCDPEval(evalArgs)
+        let ok = result.data["result"]?.contains(#""ok":true"#) == true
+        return ToolResult(success: ok, evidence: ok ? "Extracted structured page data through CDP." : "Could not extract structured page data.", data: result.data, error: ok ? nil : "extract_failed")
+    }
+
+    private func browserCDPWait(_ args: [String: Any]) throws -> ToolResult {
+        let condition = normalizeForSearch(string(args["condition"]) ?? "")
+        let value = string(args["value"]) ?? ""
+        let timeout = max(0.5, double(args["timeout"]) ?? 15)
+        let interval = max(0.1, double(args["interval"]) ?? 0.5)
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = ""
+        while Date() < deadline {
+            let expression: String
+            switch condition {
+            case "selector":
+                expression = "(() => ({ok: !!document.querySelector(\(javascriptLiteral(value)))}))()"
+            case "text":
+                expression = "(() => ({ok: (document.body?.innerText || '').toLowerCase().includes(\(javascriptLiteral(value.lowercased())))}))()"
+            case "url_contains":
+                expression = "(() => ({ok: location.href.toLowerCase().includes(\(javascriptLiteral(value.lowercased())))}))()"
+            case "expression":
+                expression = "(() => ({ok: Boolean(\(value))}))()"
+            default:
+                throw RuntimeError("Unsupported CDP wait condition: \(condition)")
+            }
+            var evalArgs = args
+            evalArgs["script"] = expression
+            let result = try browserCDPEval(evalArgs)
+            last = result.data["result"] ?? ""
+            if last.contains(#""ok":true"#) {
+                return ToolResult(success: true, evidence: "CDP wait condition met: \(condition).", data: ["result": last])
+            }
+            Thread.sleep(forTimeInterval: interval)
+        }
+        return ToolResult(success: false, evidence: "Timed out waiting for CDP condition \(condition).", data: ["last_result": last], error: "timeout")
+    }
+
     private func cdpEndpoint(_ args: [String: Any]) -> ChromeCDP.Endpoint {
         ChromeCDP.Endpoint(host: string(args["host"]) ?? "127.0.0.1", port: int(args["port"]) ?? 9222)
     }
@@ -8587,6 +9419,45 @@ final class ToolRegistry {
         ])
     }
 
+    private func contextGraphIngestTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let fromKind = string(args["from_kind"]), let fromLabel = string(args["from_label"]),
+              let toKind = string(args["to_kind"]), let toLabel = string(args["to_label"]),
+              let relation = string(args["relation"])
+        else { throw RuntimeError("from_kind, from_label, to_kind, to_label, and relation are required") }
+        ContextGraphStore.ingest(
+            fromKind: fromKind,
+            fromLabel: fromLabel,
+            toKind: toKind,
+            toLabel: toLabel,
+            relation: relation,
+            weight: double(args["weight"]) ?? 1
+        )
+        return ToolResult(success: true, evidence: "Ingested context graph relationship.", data: [
+            "from": "\(fromKind):\(fromLabel)",
+            "to": "\(toKind):\(toLabel)",
+            "relation": relation
+        ])
+    }
+
+    private func memoryProfileTool(_ args: [String: Any]) -> ToolResult {
+        let query = string(args["query"]) ?? ""
+        let limit = int(args["limit"]) ?? 8
+        let memories = MemoryStore.recall(query: query, limit: limit)
+        let episodes = EpisodeStore.recall(query: query, limit: limit)
+        let graph = ContextGraphStore.query(query, limit: limit)
+        let skills = AppSkillStore.suggest(query: query, limit: limit)
+        let recipes = (try? RecipeStore.suggest(goal: query, limit: limit)) ?? []
+        return ToolResult(success: true, evidence: "Built durable context profile.", data: [
+            "query": query,
+            "memories": jsonStringValue(memories.map(\.dictionary)),
+            "episodes": jsonStringValue(episodes.map(\.dictionary)),
+            "graph_nodes": jsonStringValue(graph.nodes.map { ["id": $0.id, "kind": $0.kind, "label": $0.label] }),
+            "graph_edges": jsonStringValue(graph.edges.map { ["from": $0.from, "to": $0.to, "relation": $0.relation, "weight": String(format: "%.2f", $0.weight)] }),
+            "app_skills": jsonStringValue(skills.map(\.dictionary)),
+            "recipes": jsonStringValue(recipes.map(\.summary))
+        ])
+    }
+
     private func appSkillListTool(_ args: [String: Any]) -> ToolResult {
         let query = string(args["query"]) ?? ""
         let limit = int(args["limit"]) ?? 20
@@ -8603,6 +9474,37 @@ final class ToolRegistry {
             "query": query,
             "skills": jsonStringValue(skills.map(\.dictionary))
         ])
+    }
+
+    private func appSkillInstallTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let id = string(args["id"]), !id.isEmpty else { throw RuntimeError("id is required") }
+        guard let appName = string(args["app_name"]), !appName.isEmpty else { throw RuntimeError("app_name is required") }
+        let selectors: [String: String] = {
+            guard let raw = string(args["selectors_json"]),
+                  let data = raw.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return [:] }
+            return parsed.compactMapValues { string($0) }
+        }()
+        let skill = AppSkill(
+            id: id,
+            appName: appName,
+            bundleID: string(args["bundle_id"]) ?? "",
+            version: string(args["version"]) ?? "1",
+            capabilities: (try? stringArray(args["capabilities"], name: "capabilities")) ?? [],
+            tools: (try? stringArray(args["tools"], name: "tools")) ?? [],
+            recipes: (try? stringArray(args["recipes"], name: "recipes")) ?? [],
+            selectors: selectors,
+            permissions: (try? stringArray(args["permissions"], name: "permissions")) ?? [],
+            notes: string(args["notes"]) ?? ""
+        )
+        let knownTools = Set(definitions.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+        let issues = AppSkillStore.validate(skill, knownTools: knownTools)
+        let installed = try AppSkillStore.install(skill)
+        return ToolResult(success: issues.isEmpty, evidence: issues.isEmpty ? "Installed app skill \(id)." : "Installed app skill \(id) with validation issues.", data: [
+            "skill": jsonStringValue(installed.dictionary),
+            "issues": issues.joined(separator: "\n")
+        ], error: issues.isEmpty ? nil : "app_skill_validation_issues")
     }
 
     private func trajectoryGetTool(_ args: [String: Any]) throws -> ToolResult {
@@ -8623,6 +9525,24 @@ final class ToolRegistry {
         ])
     }
 
+    private func trajectorySessionExportTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
+        let url = try TrajectoryStore.exportSession(runID: runID)
+        return ToolResult(success: true, evidence: "Exported replay session.", data: [
+            "run_id": runID,
+            "path": url.path
+        ])
+    }
+
+    private func trajectoryReplayPlanTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
+        let plan = try TrajectoryStore.replayPlan(runID: runID, fromIndex: int(args["from_index"]) ?? 1, toIndex: int(args["to_index"]))
+        return ToolResult(success: true, evidence: "Prepared replay plan with \(plan.count) replayable event(s).", data: [
+            "run_id": runID,
+            "plan": jsonStringValue(plan)
+        ])
+    }
+
     private func recipePromoteRunTool(_ args: [String: Any]) throws -> ToolResult {
         guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
         let recipe = try RecipeStore.promoteRun(
@@ -8635,6 +9555,85 @@ final class ToolRegistry {
             "required_params": recipe.requiredParams.joined(separator: ","),
             "steps": "\(recipe.steps.count)",
             "recipe": recipe.jsonString
+        ])
+    }
+
+    private func recipeCompileTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let id = string(args["id"]), !id.isEmpty else { throw RuntimeError("id is required") }
+        let graph = try RecipeStore.compile(recipeID: id)
+        let invalid = graph.filter { $0["branch_valid"] == "false" }
+        return ToolResult(success: invalid.isEmpty, evidence: invalid.isEmpty ? "Compiled recipe workflow program." : "Recipe has invalid branch target(s).", data: [
+            "id": id,
+            "steps": jsonStringValue(graph),
+            "invalid_steps": invalid.map { $0["id"] ?? "" }.joined(separator: ",")
+        ], error: invalid.isEmpty ? nil : "recipe_compile_invalid")
+    }
+
+    private func recipeRefineTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let id = string(args["id"]), !id.isEmpty else { throw RuntimeError("id is required") }
+        guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
+        let recipe = try RecipeStore.recordRunOutcome(
+            recipeID: id,
+            runID: runID,
+            success: bool(args["success"]) ?? false,
+            notes: string(args["notes"]) ?? ""
+        )
+        return ToolResult(success: true, evidence: "Refined recipe \(id) from run outcome.", data: [
+            "id": recipe.id,
+            "version": "\(recipe.version ?? 1)",
+            "success_count": "\(recipe.successCount ?? 0)",
+            "failure_count": "\(recipe.failureCount ?? 0)"
+        ])
+    }
+
+    private func runtimeStatusTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
+        let summary = try EventStore.readSummary(runID: runID)
+        let runDir = EventStore.runsURL.appendingPathComponent(runID, isDirectory: true)
+        let store = EventStore(runID: runID, goal: summary.goal, dir: runDir, eventsURL: URL(fileURLWithPath: summary.eventsPath), summaryURL: runDir.appendingPathComponent("summary.json"))
+        var checkpointPayload = ""
+        if let checkpoint = store.loadCheckpoint(),
+           let data = try? JSONEncoder().encode(checkpoint),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            checkpointPayload = jsonStringValue(object)
+        }
+        let events = try TrajectoryStore.summarize(runID: runID, limit: int(args["limit"]) ?? 80)
+        return ToolResult(success: true, evidence: "Loaded runtime status.", data: [
+            "run_id": runID,
+            "goal": summary.goal,
+            "status": summary.status,
+            "created_at": summary.createdAt,
+            "updated_at": summary.updatedAt,
+            "checkpoint": checkpointPayload,
+            "trajectory": jsonStringValue(events)
+        ])
+    }
+
+    private func runtimeScheduleTool(_ args: [String: Any]) throws -> ToolResult {
+        let resumeAt: String? = {
+            if let text = string(args["resume_at"]), !text.isEmpty { return text }
+            if let seconds = double(args["resume_after_seconds"]), seconds > 0 {
+                return isoDateString(Date().addingTimeInterval(seconds))
+            }
+            return nil
+        }()
+        if let runID = string(args["run_id"]), !runID.isEmpty {
+            let goal = string(args["goal"]) ?? (try? EventStore.readSummary(runID: runID).goal) ?? ""
+            try TaskQueue.submitExisting(runID: runID, goal: goal, notBefore: resumeAt)
+            return ToolResult(success: true, evidence: resumeAt == nil ? "Queued existing run." : "Scheduled existing run.", data: [
+                "run_id": runID,
+                "goal": goal,
+                "resume_at": resumeAt ?? ""
+            ])
+        }
+        guard let goal = string(args["goal"]), !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError("goal is required when run_id is not provided")
+        }
+        let runID = try TaskQueue.submit(goal: goal, notBefore: resumeAt)
+        return ToolResult(success: true, evidence: resumeAt == nil ? "Queued new run." : "Scheduled new run.", data: [
+            "run_id": runID,
+            "goal": goal,
+            "resume_at": resumeAt ?? ""
         ])
     }
 
@@ -10728,6 +11727,100 @@ final class CDPResultBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return stored
+    }
+}
+
+struct VisionSidecar {
+    static var isConfigured: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return !(env["AIOS_VISION_BASE_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !(env["AIOS_VISION_MODEL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func analyze(imagePath: String, prompt: String, timeout: TimeInterval = 30) throws -> String {
+        let env = ProcessInfo.processInfo.environment
+        guard let rawBase = env["AIOS_VISION_BASE_URL"], !rawBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError("AIOS_VISION_BASE_URL is not configured.")
+        }
+        guard let model = env["AIOS_VISION_MODEL"], !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError("AIOS_VISION_MODEL is not configured.")
+        }
+        let url = chatCompletionsURL(from: rawBase)
+        let imageURL = try dataURL(forImagePath: imagePath)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let key = env["AIOS_VISION_API_KEY"] ?? env["AIOS_LLM_API_KEY"], !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [[
+                "role": "user",
+                "content": [
+                    ["type": "text", "text": prompt],
+                    ["type": "image_url", "image_url": ["url": imageURL]]
+                ]
+            ]],
+            "temperature": 0.1
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let semaphore = DispatchSemaphore(value: 0)
+        let output = CDPResultBox(.failure(RuntimeError("Vision sidecar timed out.")))
+        let session = URLSession(configuration: .ephemeral)
+        session.dataTask(with: request) { data, response, error in
+            defer {
+                session.invalidateAndCancel()
+                semaphore.signal()
+            }
+            if let error {
+                output.set(.failure(error))
+                return
+            }
+            let data = data ?? Data()
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                output.set(.failure(RuntimeError("Vision HTTP \(http.statusCode): \(String(data: data, encoding: .utf8) ?? "")")))
+                return
+            }
+            do {
+                output.set(.success(try parseVisionAnswer(data)))
+            } catch {
+                output.set(.failure(error))
+            }
+        }.resume()
+        _ = semaphore.wait(timeout: .now() + timeout)
+        return try output.get().get()
+    }
+
+    private static func chatCompletionsURL(from rawValue: String) -> URL {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("/chat/completions") { return URL(string: trimmed)! }
+        let base = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return URL(string: "\(base)/chat/completions")!
+    }
+
+    private static func dataURL(forImagePath path: String) throws -> String {
+        let url = URL(fileURLWithPath: path.expandingTildeInPath)
+        let data = try Data(contentsOf: url)
+        let ext = url.pathExtension.lowercased()
+        let mime = ext == "jpg" || ext == "jpeg" ? "image/jpeg" : ext == "webp" ? "image/webp" : "image/png"
+        return "data:\(mime);base64,\(data.base64EncodedString())"
+    }
+
+    private static func parseVisionAnswer(_ data: Data) throws -> String {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let message = first["message"] as? [String: Any]
+        else {
+            throw RuntimeError("Vision response did not contain choices[0].message")
+        }
+        if let text = message["content"] as? String { return text }
+        if let parts = message["content"] as? [[String: Any]] {
+            let text = parts.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            if !text.isEmpty { return text }
+        }
+        return jsonStringValue(message)
     }
 }
 

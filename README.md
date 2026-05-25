@@ -46,6 +46,17 @@ The practical target is:
 - app control through Apple Events, Shortcuts, app APIs, AX actions, and fallback input
 - an observe-act-verify loop shared with the Linux and Android projects
 
+The active Swift prototype in `06-prototypes/aios-llm-swift` now implements the core long-running computer-use runtime layers:
+
+- deep control routing through CDP/DOM, AppleScript/SDEF, non-invasive AX, visual grounding, and opt-in foreground fallback
+- visual grounding plus an OpenAI-compatible vision sidecar hook for VQA/layout/icon reasoning
+- recipe workflow programs with parameters, pre/postconditions, branches, loops, recovery, promotion, compilation, and refinement
+- durable queue/checkpoint/schedule/status runtime for long-running tasks
+- app skill manifests that can be installed locally instead of hard-coding every adapter into Swift
+- Stagehand-style browser observe/act/extract/wait tools on top of Chrome CDP
+- memory profile, episode recall, and context graph ingestion/query
+- cockpit/replay session export for inspecting, resuming, and turning trajectories into reusable workflows
+
 The key boundary is that the AI operates through Apple-approved control surfaces. It should not assume it can bypass TCC, Secure Input, sandboxing, DRM, banking/payment protections, or per-app Automation prompts.
 
 ### Closest Open-Source Implementations
