@@ -618,7 +618,7 @@ struct AIOSConfig: Codable {
             "run_at_login: \(runAtLogin)",
             "require_confirm_for_protected_actions: \(requireConfirmForProtectedActions)",
             "enable_ocr_fallback: \(enableOCRFallback)",
-            "api_key: \(((try? Self.loadAPIKey())?.isEmpty == false) ? "stored_in_keychain" : "not_set")"
+            "credential: \(((try? Self.loadAPIKey())?.isEmpty == false) ? "stored_in_keychain" : "not_set")"
         ].joined(separator: "\n")
     }
 
@@ -759,6 +759,22 @@ struct EventStore {
         rootURL.appendingPathComponent("memory", isDirectory: true)
     }
 
+    static var episodesURL: URL {
+        rootURL.appendingPathComponent("episodes", isDirectory: true)
+    }
+
+    static var contextGraphURL: URL {
+        rootURL.appendingPathComponent("context-graph", isDirectory: true)
+    }
+
+    static var appSkillsURL: URL {
+        rootURL.appendingPathComponent("app-skills", isDirectory: true)
+    }
+
+    static var trajectoriesURL: URL {
+        rootURL.appendingPathComponent("trajectories", isDirectory: true)
+    }
+
     static var auditURL: URL {
         rootURL.appendingPathComponent("audit.jsonl")
     }
@@ -820,19 +836,23 @@ struct EventStore {
     }
 
     func updateStatus(_ status: String) throws {
-        let existingCreatedAt: String? = {
+        let existing: [String: Any]? = {
             guard let data = try? Data(contentsOf: summaryURL),
                   let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return nil }
-            return string(raw["created_at"])
+            return raw
         }()
+        let existingCreatedAt = string(existing?["created_at"])
+        let existingStatus = string(existing?["status"]) ?? ""
+        let parkedStatuses: Set<String> = ["paused", "scheduled"]
+        let finalStatus = parkedStatuses.contains(existingStatus) && status == "incomplete" ? existingStatus : status
         let now = isoDateString(Date())
         let summary: [String: String] = [
             "id": runID,
             "goal": goal,
             "created_at": existingCreatedAt ?? now,
             "updated_at": now,
-            "status": status,
+            "status": finalStatus,
             "events_path": eventsURL.path
         ]
         let data = try JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys])
@@ -842,7 +862,7 @@ struct EventStore {
             goal: goal,
             createdAt: existingCreatedAt ?? now,
             updatedAt: now,
-            status: status,
+            status: finalStatus,
             eventsPath: eventsURL.path
         ))
     }
@@ -1115,27 +1135,32 @@ struct SQLiteRunIndex {
 }
 
 struct TaskQueue {
-    static func submit(goal: String) throws -> String {
+    static func submit(goal: String, notBefore: String? = nil) throws -> String {
         try FileManager.default.createDirectory(at: EventStore.queueURL, withIntermediateDirectories: true)
         let id = UUID().uuidString
-        try write(id: id, goal: goal)
+        try write(id: id, goal: goal, notBefore: notBefore)
         _ = try EventStore.createQueued(goal: goal, runID: id)
         return id
     }
 
-    static func submitExisting(runID: String, goal: String) throws {
+    static func submitExisting(runID: String, goal: String, notBefore: String? = nil) throws {
         try FileManager.default.createDirectory(at: EventStore.queueURL, withIntermediateDirectories: true)
-        try write(id: runID, goal: goal)
-        try? EventStore.markRun(runID: runID, status: "queued", event: "RunResumeQueued", fields: [:])
+        try write(id: runID, goal: goal, notBefore: notBefore)
+        var fields: [String: String] = [:]
+        if let notBefore { fields["not_before"] = notBefore }
+        try? EventStore.markRun(runID: runID, status: notBefore == nil ? "queued" : "scheduled", event: "RunResumeQueued", fields: fields)
     }
 
-    private static func write(id: String, goal: String) throws {
+    private static func write(id: String, goal: String, notBefore: String?) throws {
         let url = EventStore.queueURL.appendingPathComponent("\(id).json")
-        let item: [String: String] = [
+        var item: [String: String] = [
             "id": id,
             "goal": goal,
             "created_at": isoDateString(Date())
         ]
+        if let notBefore {
+            item["not_before"] = notBefore
+        }
         let data = try JSONSerialization.data(withJSONObject: item, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: url, options: [.atomic])
     }
@@ -1149,12 +1174,19 @@ struct TaskQueue {
                 let r = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 return l < r
             }
-        guard let url = urls.first,
-              let data = try? Data(contentsOf: url),
-              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let goal = string(raw["goal"])
-        else { return nil }
-        return (string(raw["id"]) ?? url.deletingPathExtension().lastPathComponent, goal, url)
+        for url in urls {
+            guard let data = try? Data(contentsOf: url),
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let goal = string(raw["goal"])
+            else { continue }
+            if let notBefore = string(raw["not_before"]),
+               let date = isoDate(from: notBefore),
+               date > Date() {
+                continue
+            }
+            return (string(raw["id"]) ?? url.deletingPathExtension().lastPathComponent, goal, url)
+        }
+        return nil
     }
 
     static func remove(_ url: URL) throws {
@@ -1513,11 +1545,11 @@ struct MemoryStore {
     private static func memoryTokens(from text: String) -> [String] {
         let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols)
         return text.components(separatedBy: separators).flatMap { raw -> [String] in
-            let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !token.isEmpty else { return [] }
-            if token.count <= 10 { return [token] }
+            let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty else { return [] }
+            if term.count <= 10 { return [term] }
             let domainTerms = ["wechat", "微信", "lark", "飞书", "qq", "calendar", "日历", "finder", "pdf", "recipe", "visual", "ocr"]
-            return [token] + domainTerms.filter { token.contains($0) }
+            return [term] + domainTerms.filter { term.contains($0) }
         }
     }
 
@@ -1537,11 +1569,422 @@ struct MemoryStore {
     }
 }
 
+struct Episode: Codable {
+    let id: String
+    let runID: String
+    let goal: String
+    let outcome: String
+    let startedAt: String
+    let endedAt: String
+    let steps: [String]
+    let tools: [String]
+    let apps: [String]
+    let recipes: [String]
+    let memoryKeys: [String]
+    let summary: String
+
+    var dictionary: [String: String] {
+        [
+            "id": id,
+            "run_id": runID,
+            "goal": goal,
+            "outcome": outcome,
+            "started_at": startedAt,
+            "ended_at": endedAt,
+            "steps": steps.joined(separator: ","),
+            "tools": tools.joined(separator: ","),
+            "apps": apps.joined(separator: ","),
+            "recipes": recipes.joined(separator: ","),
+            "memory_keys": memoryKeys.joined(separator: ","),
+            "summary": summary
+        ]
+    }
+}
+
+struct EpisodeStore {
+    static var url: URL {
+        EventStore.episodesURL.appendingPathComponent("episodes.jsonl")
+    }
+
+    @discardableResult
+    static func record(runID: String, goal: String, plan: TaskPlan, outcome: String, eventsText: String) -> Episode {
+        let events = parseEvents(eventsText)
+        let tools = unique(events.compactMap { $0["tool"] })
+        let recipes = unique(events.compactMap { event in
+            event["recipe_id"] ?? (event["tool"] == "recipe_execute" ? event["arguments"] : nil)
+        }.map { truncateMiddle($0, maxCharacters: 80) })
+        let apps = unique(events.flatMap { event -> [String] in
+            [
+                event["app"],
+                event["target_app"],
+                event["bundle_id"],
+                event["target_bundle_id"]
+            ].compactMap { $0 }.filter { !$0.isEmpty }
+        })
+        let memoryKeys = unique(events.compactMap { event in
+            event["event"] == "MemoryRemembered" ? event["key"] : nil
+        })
+        let started = events.first?["time"] ?? isoDateString(Date())
+        let ended = events.last?["time"] ?? isoDateString(Date())
+        let stepLines = plan.steps.map { "\($0.id):\($0.status.rawValue):\($0.title)" }
+        let summary = "\(outcome): \(goal) | steps=\(plan.steps.count) tools=\(tools.prefix(8).joined(separator: ","))"
+        let episode = Episode(
+            id: "EP-\(runID)",
+            runID: runID,
+            goal: goal,
+            outcome: outcome,
+            startedAt: started,
+            endedAt: ended,
+            steps: stepLines,
+            tools: tools,
+            apps: apps,
+            recipes: recipes,
+            memoryKeys: memoryKeys,
+            summary: summary
+        )
+        try? append(episode)
+        ContextGraphStore.ingest(episode: episode)
+        return episode
+    }
+
+    static func list(limit: Int = 20) -> [Episode] {
+        Array(readAll().sorted { $0.endedAt > $1.endedAt }.prefix(min(100, max(1, limit))))
+    }
+
+    static func recall(query: String, limit: Int = 8) -> [Episode] {
+        let normalizedQuery = normalizeForSearch(query)
+        guard !normalizedQuery.isEmpty else { return list(limit: limit) }
+        let tokens = Set(normalizedQuery.components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)).filter { !$0.isEmpty })
+        let scored = readAll().compactMap { episode -> (Episode, Int)? in
+            let haystack = normalizeForSearch([episode.goal, episode.summary, episode.tools.joined(separator: " "), episode.apps.joined(separator: " ")].joined(separator: " "))
+            var score = haystack.contains(normalizedQuery) ? 8 : 0
+            for token in tokens where token.count >= 2 && haystack.contains(token) {
+                score += 2
+            }
+            guard score > 0 else { return nil }
+            return (episode, score)
+        }
+        return scored.sorted {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.0.endedAt > $1.0.endedAt
+        }.prefix(min(50, max(1, limit))).map(\.0)
+    }
+
+    private static func append(_ episode: Episode) throws {
+        try FileManager.default.createDirectory(at: EventStore.episodesURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(episode)
+        let line = (String(data: data, encoding: .utf8) ?? "{}") + "\n"
+        if FileManager.default.fileExists(atPath: url.path) {
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(line.utf8))
+            try handle.close()
+        } else {
+            try line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private static func readAll() -> [Episode] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.components(separatedBy: .newlines).compactMap { line in
+            guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let data = line.data(using: .utf8)
+            else { return nil }
+            return try? JSONDecoder().decode(Episode.self, from: data)
+        }
+    }
+
+    static func parseEvents(_ text: String) -> [[String: String]] {
+        text.components(separatedBy: .newlines).compactMap { line in
+            guard let data = line.data(using: .utf8),
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return raw.reduce(into: [String: String]()) { result, pair in
+                if let value = pair.value as? String {
+                    result[pair.key] = value
+                } else if let value = pair.value as? NSNumber {
+                    result[pair.key] = value.stringValue
+                }
+            }
+        }
+    }
+}
+
+struct ContextNode: Codable {
+    let id: String
+    let kind: String
+    let label: String
+    let attributes: [String: String]
+    let updatedAt: String
+}
+
+struct ContextEdge: Codable {
+    let from: String
+    let to: String
+    let relation: String
+    let weight: Double
+    let updatedAt: String
+}
+
+struct ContextGraphStore {
+    static var nodesURL: URL {
+        EventStore.contextGraphURL.appendingPathComponent("nodes.json")
+    }
+
+    static var edgesURL: URL {
+        EventStore.contextGraphURL.appendingPathComponent("edges.json")
+    }
+
+    static func ingest(episode: Episode) {
+        let now = isoDateString(Date())
+        var nodes = readNodes()
+        var edges = readEdges()
+        upsertNode(&nodes, ContextNode(id: "episode:\(episode.id)", kind: "episode", label: episode.goal, attributes: episode.dictionary, updatedAt: now))
+        for app in episode.apps {
+            let appID = "app:\(normalizeID(app))"
+            upsertNode(&nodes, ContextNode(id: appID, kind: "app", label: app, attributes: ["name": app], updatedAt: now))
+            upsertEdge(&edges, ContextEdge(from: "episode:\(episode.id)", to: appID, relation: "used_app", weight: 1, updatedAt: now))
+        }
+        for tool in episode.tools {
+            let toolID = "tool:\(normalizeID(tool))"
+            upsertNode(&nodes, ContextNode(id: toolID, kind: "tool", label: tool, attributes: ["name": tool], updatedAt: now))
+            upsertEdge(&edges, ContextEdge(from: "episode:\(episode.id)", to: toolID, relation: "used_tool", weight: 1, updatedAt: now))
+        }
+        for recipe in episode.recipes {
+            let recipeID = "recipe:\(normalizeID(recipe))"
+            upsertNode(&nodes, ContextNode(id: recipeID, kind: "recipe", label: recipe, attributes: ["id": recipe], updatedAt: now))
+            upsertEdge(&edges, ContextEdge(from: "episode:\(episode.id)", to: recipeID, relation: "used_recipe", weight: 1, updatedAt: now))
+        }
+        try? write(nodes: nodes, edges: edges)
+    }
+
+    static func query(_ text: String, limit: Int = 20) -> (nodes: [ContextNode], edges: [ContextEdge]) {
+        let normalizedQuery = normalizeForSearch(text)
+        let nodes = readNodes()
+        let matched = nodes.filter { node in
+            normalizedQuery.isEmpty ||
+            normalizeForSearch([node.id, node.kind, node.label, node.attributes.values.joined(separator: " ")].joined(separator: " ")).contains(normalizedQuery)
+        }.prefix(min(100, max(1, limit)))
+        let ids = Set(matched.map(\.id))
+        let edges = readEdges().filter { ids.contains($0.from) || ids.contains($0.to) }.prefix(min(200, max(1, limit * 3)))
+        return (Array(matched), Array(edges))
+    }
+
+    private static func readNodes() -> [ContextNode] {
+        guard let data = try? Data(contentsOf: nodesURL),
+              let nodes = try? JSONDecoder().decode([ContextNode].self, from: data)
+        else { return [] }
+        return nodes
+    }
+
+    private static func readEdges() -> [ContextEdge] {
+        guard let data = try? Data(contentsOf: edgesURL),
+              let edges = try? JSONDecoder().decode([ContextEdge].self, from: data)
+        else { return [] }
+        return edges
+    }
+
+    private static func write(nodes: [ContextNode], edges: [ContextEdge]) throws {
+        try FileManager.default.createDirectory(at: EventStore.contextGraphURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(nodes).write(to: nodesURL, options: [.atomic])
+        try encoder.encode(edges).write(to: edgesURL, options: [.atomic])
+    }
+
+    private static func upsertNode(_ nodes: inout [ContextNode], _ node: ContextNode) {
+        if let index = nodes.firstIndex(where: { $0.id == node.id }) {
+            nodes[index] = node
+        } else {
+            nodes.append(node)
+        }
+    }
+
+    private static func upsertEdge(_ edges: inout [ContextEdge], _ edge: ContextEdge) {
+        if let index = edges.firstIndex(where: { $0.from == edge.from && $0.to == edge.to && $0.relation == edge.relation }) {
+            let existing = edges[index]
+            edges[index] = ContextEdge(from: edge.from, to: edge.to, relation: edge.relation, weight: existing.weight + edge.weight, updatedAt: edge.updatedAt)
+        } else {
+            edges.append(edge)
+        }
+    }
+}
+
+struct AppSkill: Codable {
+    let id: String
+    let appName: String
+    let bundleID: String
+    let version: String
+    let capabilities: [String]
+    let tools: [String]
+    let recipes: [String]
+    let selectors: [String: String]
+    let permissions: [String]
+    let notes: String
+
+    var dictionary: [String: String] {
+        [
+            "id": id,
+            "app_name": appName,
+            "bundle_id": bundleID,
+            "version": version,
+            "capabilities": capabilities.joined(separator: ","),
+            "tools": tools.joined(separator: ","),
+            "recipes": recipes.joined(separator: ","),
+            "selectors": jsonStringValue(selectors),
+            "permissions": permissions.joined(separator: ","),
+            "notes": notes
+        ]
+    }
+}
+
+struct AppSkillStore {
+    static let builtIns: [AppSkill] = [
+        AppSkill(id: "finder", appName: "Finder", bundleID: "com.apple.finder", version: "1", capabilities: ["files", "folders", "reveal", "search"], tools: ["finder_list_directory", "finder_file_info", "finder_find_files", "finder_create_folder", "finder_reveal_file"], recipes: [], selectors: [:], permissions: ["automation"], notes: "Native Finder file operations plus reveal."),
+        AppSkill(id: "browser-chrome", appName: "Google Chrome", bundleID: "com.google.Chrome", version: "1", capabilities: ["web", "dom", "cdp", "javascript", "tabs"], tools: ["chrome_open_url", "chrome_eval_js", "browser_cdp_launch", "browser_cdp_tabs", "browser_cdp_eval", "browser_cdp_click", "browser_cdp_type", "browser_cdp_read"], recipes: [], selectors: ["default_input": "input,textarea,[contenteditable=true]"], permissions: ["automation", "remote-debugging-port when using CDP"], notes: "Use CDP tools for DOM-level background web app control when available."),
+        AppSkill(id: "textedit", appName: "TextEdit", bundleID: "com.apple.TextEdit", version: "1", capabilities: ["text", "documents", "save"], tools: ["textedit_new_document", "textedit_set_text", "textedit_read_text", "textedit_save_as"], recipes: [], selectors: [:], permissions: ["automation"], notes: "AppleScript-backed deterministic text document operations."),
+        AppSkill(id: "wechat", appName: "WeChat", bundleID: "com.tencent.xinWeChat", version: "1", capabilities: ["chat", "send", "verify"], tools: ["wechat_open", "wechat_search_chat", "wechat_open_chat", "wechat_stage_file", "wechat_send_text", "wechat_send_staged", "wechat_verify_chat", "wechat_verify_recent_message"], recipes: ["send-file-to-contact", "write-plan-and-sync"], selectors: [:], permissions: ["accessibility", "screen-recording"], notes: "Chat workflow adapter with recipient/message verification.")
+    ]
+
+    static func list() -> [AppSkill] {
+        let disk = diskSkills()
+        let diskIDs = Set(disk.map(\.id))
+        return disk + builtIns.filter { !diskIDs.contains($0.id) }
+    }
+
+    static func suggest(query: String, limit: Int = 8) -> [AppSkill] {
+        let normalizedQuery = normalizeForSearch(query)
+        guard !normalizedQuery.isEmpty else { return Array(list().prefix(limit)) }
+        let scored = list().compactMap { skill -> (AppSkill, Int)? in
+            let haystack = normalizeForSearch([
+                skill.id,
+                skill.appName,
+                skill.bundleID,
+                skill.capabilities.joined(separator: " "),
+                skill.tools.joined(separator: " "),
+                skill.recipes.joined(separator: " "),
+                skill.notes
+            ].joined(separator: " "))
+            var score = haystack.contains(normalizedQuery) ? 8 : 0
+            for token in normalizedQuery.components(separatedBy: " ") where token.count >= 2 && haystack.contains(token) {
+                score += 2
+            }
+            guard score > 0 else { return nil }
+            return (skill, score)
+        }
+        return scored.sorted { $0.1 > $1.1 }.prefix(min(50, max(1, limit))).map(\.0)
+    }
+
+    private static func diskSkills() -> [AppSkill] {
+        guard FileManager.default.fileExists(atPath: EventStore.appSkillsURL.path),
+              let urls = try? FileManager.default.contentsOfDirectory(at: EventStore.appSkillsURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        else { return [] }
+        return urls.filter { $0.pathExtension == "json" }.compactMap { url in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode(AppSkill.self, from: data)
+        }
+    }
+}
+
+struct TrajectoryStore {
+    static func summarize(runID: String, limit: Int = 200) throws -> [[String: String]] {
+        let text = try EventStore.readEventsText(runID: runID)
+        let events = EpisodeStore.parseEvents(text)
+        return events.enumerated().prefix(min(1_000, max(1, limit))).map { index, event in
+            [
+                "index": "\(index + 1)",
+                "time": event["time"] ?? "",
+                "event": event["event"] ?? "",
+                "step_id": event["step_id"] ?? "",
+                "tool": event["tool"] ?? "",
+                "success": event["success"] ?? "",
+                "evidence": truncateMiddle(event["evidence"] ?? event["reason"] ?? event["summary"] ?? "", maxCharacters: 500),
+                "screenshot": event["path"] ?? event["image_path"] ?? ""
+            ]
+        }
+    }
+
+    static func export(runID: String) throws -> URL {
+        let summary = try EventStore.readSummary(runID: runID)
+        let events = try summarize(runID: runID, limit: 1_000)
+        let payload: [String: Any] = [
+            "run_id": runID,
+            "goal": summary.goal,
+            "status": summary.status,
+            "exported_at": isoDateString(Date()),
+            "events": events
+        ]
+        try FileManager.default.createDirectory(at: EventStore.trajectoriesURL, withIntermediateDirectories: true)
+        let url = EventStore.trajectoriesURL.appendingPathComponent("\(runID).json")
+        try writeJSONObject(payload, to: url)
+        return url
+    }
+}
+
+struct ComputerUseStrategy {
+    static func suggest(goal: String, app: String = "") -> [String: String] {
+        let text = normalizeForSearch([goal, app].joined(separator: " "))
+        let recipe = text.contains("pdf") || text.contains("发送") || text.contains("send") || text.contains("日历") || text.contains("calendar")
+        let browser = text.contains("web") || text.contains("网页") || text.contains("browser") || text.contains("chrome") || text.contains("safari") || text.contains("figma")
+        let visual = text.contains("canvas") || text.contains("图") || text.contains("image") || text.contains("figma") || text.contains("blender")
+        let long = text.contains("持续") || text.contains("等待") || text.contains("watch") || text.contains("long") || text.contains("长时间")
+        let primary: String
+        if browser {
+            primary = "browser_cdp_dom"
+        } else if recipe {
+            primary = "recipe_runner"
+        } else {
+            primary = "app_adapter_or_ax"
+        }
+        let perception = visual ? "visual_grounding_then_action" : "ax_or_dom_first_visual_fallback"
+        let runtime = long ? "state_machine_with_runtime_pause_and_resume" : "checkpointed_step_loop"
+        return [
+            "primary_controller": primary,
+            "planner": "llm_task_planner",
+            "executor": "swift_tool_executor",
+            "perception": perception,
+            "recipe_policy": "suggest_execute_then_promote_successful_trajectory",
+            "runtime": runtime,
+            "memory": "recall_memory_episode_context_graph"
+        ]
+    }
+}
+
+private func unique(_ values: [String]) -> [String] {
+    var seen = Set<String>()
+    var result: [String] = []
+    for value in values.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !value.isEmpty {
+        let key = value.lowercased()
+        if !seen.contains(key) {
+            seen.insert(key)
+            result.append(value)
+        }
+    }
+    return result
+}
+
+private func normalizeForSearch(_ text: String) -> String {
+    text
+        .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+        .lowercased()
+        .replacingOccurrences(of: "[\\p{Punct}\\p{Symbol}]+", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func normalizeID(_ text: String) -> String {
+    let cleaned = normalizeForSearch(text)
+        .replacingOccurrences(of: "\\s+", with: "-", options: .regularExpression)
+    return cleaned.isEmpty ? "unknown" : String(cleaned.prefix(80))
+}
+
 struct RecipeStep: Codable {
     let id: String
     let title: String
     let tool: String
     let arguments: [String: String]
+    let preconditions: [RecipeCondition]?
     let verifyTool: String?
     let verifyArguments: [String: String]?
     let waitCondition: String?
@@ -1549,6 +1992,7 @@ struct RecipeStep: Codable {
     let retries: Int?
     let fallbackTools: [RecipeFallback]?
     let verifyExpression: String?
+    let postconditions: [RecipeCondition]?
     let recoverySteps: [RecipeStep]?
     let timeout: Double?
 
@@ -1557,6 +2001,7 @@ struct RecipeStep: Codable {
         title: String,
         tool: String,
         arguments: [String: String],
+        preconditions: [RecipeCondition]? = nil,
         verifyTool: String? = nil,
         verifyArguments: [String: String]? = nil,
         waitCondition: String? = nil,
@@ -1564,6 +2009,7 @@ struct RecipeStep: Codable {
         retries: Int? = nil,
         fallbackTools: [RecipeFallback]? = nil,
         verifyExpression: String? = nil,
+        postconditions: [RecipeCondition]? = nil,
         recoverySteps: [RecipeStep]? = nil,
         timeout: Double? = nil
     ) {
@@ -1571,6 +2017,7 @@ struct RecipeStep: Codable {
         self.title = title
         self.tool = tool
         self.arguments = arguments
+        self.preconditions = preconditions
         self.verifyTool = verifyTool
         self.verifyArguments = verifyArguments
         self.waitCondition = waitCondition
@@ -1578,8 +2025,39 @@ struct RecipeStep: Codable {
         self.retries = retries
         self.fallbackTools = fallbackTools
         self.verifyExpression = verifyExpression
+        self.postconditions = postconditions
         self.recoverySteps = recoverySteps
         self.timeout = timeout
+    }
+}
+
+struct RecipeCondition: Codable {
+    let description: String
+    let tool: String
+    let arguments: [String: String]
+    let expression: String?
+
+    init(description: String = "", tool: String, arguments: [String: String] = [:], expression: String? = nil) {
+        self.description = description
+        self.tool = tool
+        self.arguments = arguments
+        self.expression = expression
+    }
+}
+
+struct RecipeParameter: Codable {
+    let name: String
+    let description: String
+    let required: Bool
+    let defaultValue: String?
+    let examples: [String]
+
+    init(name: String, description: String = "", required: Bool = true, defaultValue: String? = nil, examples: [String] = []) {
+        self.name = name
+        self.description = description
+        self.required = required
+        self.defaultValue = defaultValue
+        self.examples = examples
     }
 }
 
@@ -1608,10 +2086,47 @@ struct RecipeFallback: Codable {
 struct Recipe: Codable {
     let id: String
     let title: String
+    let version: Int?
     let goalTemplate: String
+    let parameters: [RecipeParameter]?
     let requiredParams: [String]
+    let preconditions: [RecipeCondition]?
+    let postconditions: [RecipeCondition]?
+    let appBindings: [String: String]?
     let notes: String
     let steps: [RecipeStep]
+    let successCount: Int?
+    let failureCount: Int?
+
+    init(
+        id: String,
+        title: String,
+        version: Int? = 1,
+        goalTemplate: String,
+        parameters: [RecipeParameter]? = nil,
+        requiredParams: [String],
+        preconditions: [RecipeCondition]? = nil,
+        postconditions: [RecipeCondition]? = nil,
+        appBindings: [String: String]? = nil,
+        notes: String,
+        steps: [RecipeStep],
+        successCount: Int? = nil,
+        failureCount: Int? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.version = version
+        self.goalTemplate = goalTemplate
+        self.parameters = parameters
+        self.requiredParams = requiredParams
+        self.preconditions = preconditions
+        self.postconditions = postconditions
+        self.appBindings = appBindings
+        self.notes = notes
+        self.steps = steps
+        self.successCount = successCount
+        self.failureCount = failureCount
+    }
 
     var jsonString: String {
         let encoder = JSONEncoder()
@@ -1736,7 +2251,10 @@ struct RecipeStore {
                 recipe.title,
                 recipe.goalTemplate,
                 recipe.notes,
-                recipe.requiredParams.joined(separator: " ")
+                recipe.requiredParams.joined(separator: " "),
+                (recipe.parameters ?? []).map { [$0.name, $0.description, $0.examples.joined(separator: " ")].joined(separator: " ") }.joined(separator: " "),
+                (recipe.preconditions ?? []).map(\.description).joined(separator: " "),
+                (recipe.postconditions ?? []).map(\.description).joined(separator: " ")
             ].joined(separator: " "))
             var score = 0
             var matched = Set<String>()
@@ -1810,6 +2328,19 @@ struct RecipeStore {
             "tool": render(step.tool, params: params)
         ])
 
+        let preconditions = try evaluateConditions(
+            step.preconditions,
+            phase: "precondition",
+            stepID: step.id,
+            callIDPrefix: "\(prefix)-\(step.id)-pre",
+            recipeID: recipeID,
+            params: params,
+            tools: tools,
+            eventStore: eventStore
+        )
+        results.append(contentsOf: preconditions.results)
+        guard preconditions.ok else { return results }
+
         if let waitCondition = step.waitCondition, let waitValue = step.waitValue {
             let wait = tools.execute(ToolCall(
                 id: "\(prefix)-\(step.id)-wait",
@@ -1850,6 +2381,18 @@ struct RecipeStore {
             )
             results.append(contentsOf: primary.results)
             if primary.ok {
+                let postconditions = try evaluateConditions(
+                    step.postconditions,
+                    phase: "postcondition",
+                    stepID: step.id,
+                    callIDPrefix: "\(prefix)-\(step.id)-post",
+                    recipeID: recipeID,
+                    params: params,
+                    tools: tools,
+                    eventStore: eventStore
+                )
+                results.append(contentsOf: postconditions.results)
+                guard postconditions.ok else { return results }
                 return results
             }
 
@@ -1874,6 +2417,18 @@ struct RecipeStore {
                 )
                 results.append(contentsOf: fallbackRun.results)
                 if fallbackRun.ok {
+                    let postconditions = try evaluateConditions(
+                        step.postconditions,
+                        phase: "postcondition",
+                        stepID: step.id,
+                        callIDPrefix: "\(prefix)-\(step.id)-post",
+                        recipeID: recipeID,
+                        params: params,
+                        tools: tools,
+                        eventStore: eventStore
+                    )
+                    results.append(contentsOf: postconditions.results)
+                    guard postconditions.ok else { return results }
                     return results
                 }
             }
@@ -1903,6 +2458,56 @@ struct RecipeStore {
             results.append(ToolResult(success: false, evidence: "Recipe step did not produce verified success.", error: step.id))
         }
         return results
+    }
+
+    @MainActor
+    private static func evaluateConditions(
+        _ conditions: [RecipeCondition]?,
+        phase: String,
+        stepID: String,
+        callIDPrefix: String,
+        recipeID: String,
+        params: [String: String],
+        tools: ToolRegistry,
+        eventStore: EventStore?
+    ) throws -> (ok: Bool, results: [ToolResult]) {
+        guard let conditions, !conditions.isEmpty else { return (true, []) }
+        var results: [ToolResult] = []
+        for (index, condition) in conditions.enumerated() {
+            let toolName = render(condition.tool, params: params)
+            let args = renderArguments(condition.arguments, params: params)
+            let result = tools.execute(ToolCall(id: "\(callIDPrefix)-\(index + 1)", name: toolName, arguments: args, raw: [:]))
+            results.append(result)
+            let expression = condition.expression.map { render($0, params: params) }
+            let ok = result.success && (expression.map { evaluateVerifyExpression($0, result: result) } ?? true)
+            let evidence = ok
+                ? "\(phase) passed: \(condition.description.isEmpty ? toolName : condition.description)"
+                : "\(phase) failed: \(condition.description.isEmpty ? toolName : condition.description)"
+            let conditionResult = ToolResult(
+                success: ok,
+                evidence: evidence,
+                data: [
+                    "recipe_id": recipeID,
+                    "step_id": stepID,
+                    "phase": phase,
+                    "tool": toolName,
+                    "expression": expression ?? ""
+                ],
+                error: ok ? nil : "\(phase)_failed"
+            )
+            results.append(conditionResult)
+            try eventStore?.append("RecipeCondition", [
+                "recipe_id": recipeID,
+                "step_id": stepID,
+                "phase": phase,
+                "tool": toolName,
+                "success": ok ? "true" : "false",
+                "evidence": conditionResult.evidence,
+                "error": conditionResult.error ?? ""
+            ])
+            guard ok else { return (false, results) }
+        }
+        return (true, results)
     }
 
     @MainActor
@@ -2044,6 +2649,117 @@ struct RecipeStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(recipe).write(to: recipeURL(recipe.id), options: [.atomic])
         return recipe
+    }
+
+    static func promoteRun(runID: String, recipeID: String? = nil, title: String? = nil) throws -> Recipe {
+        let summary = try EventStore.readSummary(runID: runID)
+        let events = EpisodeStore.parseEvents(try EventStore.readEventsText(runID: runID))
+        var steps: [RecipeStep] = []
+        var pendingAction: [String: String]?
+        for event in events {
+            switch event["event"] {
+            case "AppAction":
+                pendingAction = event
+            case "Observation":
+                guard let action = pendingAction,
+                      event["success"] == "true",
+                      let toolName = action["tool"],
+                      !toolName.isEmpty,
+                      let argumentsText = action["arguments"],
+                      let argumentsData = argumentsText.data(using: .utf8),
+                      let rawArgs = try? JSONSerialization.jsonObject(with: argumentsData) as? [String: Any]
+                else {
+                    pendingAction = nil
+                    continue
+                }
+                let args = rawArgs.compactMapValues { value -> String? in
+                    if let text = value as? String { return parameterize(text) }
+                    if let number = value as? NSNumber { return number.stringValue }
+                    return nil
+                }
+                steps.append(RecipeStep(
+                    id: "S\(steps.count + 1)",
+                    title: toolName,
+                    tool: toolName,
+                    arguments: args,
+                    verifyExpression: "success"
+                ))
+                pendingAction = nil
+            default:
+                continue
+            }
+        }
+        guard !steps.isEmpty else {
+            throw RuntimeError("Run \(runID) has no successful AppAction/Observation pairs to promote.")
+        }
+        let requiredParams = inferPlaceholders(from: steps)
+        let parameters = requiredParams.map { name in
+            RecipeParameter(name: name, description: "Promoted parameter inferred from run \(runID).", required: true)
+        }
+        let id = recipeID ?? "promoted-\(runID.prefix(8))"
+        let recipe = Recipe(
+            id: id,
+            title: title ?? "Promoted workflow from \(runID.prefix(8))",
+            goalTemplate: parameterize(summary.goal),
+            parameters: parameters,
+            requiredParams: requiredParams,
+            preconditions: nil,
+            postconditions: nil,
+            appBindings: [:],
+            notes: "Promoted from successful trajectory \(runID) at \(isoDateString(Date())). Review parameters, preconditions, and postconditions before broad reuse.",
+            steps: coalescedRecipeSteps(steps),
+            successCount: 1,
+            failureCount: 0
+        )
+        return try save(recipe)
+    }
+
+    private static func parameterize(_ value: String) -> String {
+        let pathPattern = #"(/[^\s"'{}]+|\~/[^\s"'{}]+)"#
+        var output = value.replacingOccurrences(of: pathPattern, with: "{{path}}", options: .regularExpression)
+        if output.contains("@") {
+            output = output.replacingOccurrences(of: #"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}"#, with: "{{email}}", options: [.regularExpression, .caseInsensitive])
+        }
+        return output
+    }
+
+    private static func inferPlaceholders(from steps: [RecipeStep]) -> [String] {
+        let text = steps.flatMap { [$0.tool] + Array($0.arguments.keys) + Array($0.arguments.values) }.joined(separator: "\n")
+        let pattern = #"\{\{([a-zA-Z0-9_\-]+)\}\}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsrange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = regex.matches(in: text, range: nsrange).compactMap { match -> String? in
+            guard let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+        return unique(matches)
+    }
+
+    private static func coalescedRecipeSteps(_ steps: [RecipeStep]) -> [RecipeStep] {
+        var output: [RecipeStep] = []
+        for step in steps {
+            if let last = output.last, last.tool == step.tool, last.arguments == step.arguments {
+                continue
+            }
+            output.append(RecipeStep(
+                id: "S\(output.count + 1)",
+                title: step.title,
+                tool: step.tool,
+                arguments: step.arguments,
+                preconditions: step.preconditions,
+                verifyTool: step.verifyTool,
+                verifyArguments: step.verifyArguments,
+                waitCondition: step.waitCondition,
+                waitValue: step.waitValue,
+                retries: step.retries,
+                fallbackTools: step.fallbackTools,
+                verifyExpression: step.verifyExpression,
+                postconditions: step.postconditions,
+                recoverySteps: step.recoverySteps,
+                timeout: step.timeout
+            ))
+        }
+        return output
     }
 
     static func resolvedParams(recipe: Recipe, params: [String: Any]) throws -> [String: String] {
@@ -2565,6 +3281,7 @@ struct RawEventRecorder {
                 title: step.title,
                 tool: step.tool,
                 arguments: step.arguments,
+                preconditions: step.preconditions,
                 verifyTool: step.verifyTool,
                 verifyArguments: step.verifyArguments,
                 waitCondition: step.waitCondition,
@@ -2572,6 +3289,7 @@ struct RawEventRecorder {
                 retries: step.retries,
                 fallbackTools: step.fallbackTools,
                 verifyExpression: step.verifyExpression,
+                postconditions: step.postconditions,
                 recoverySteps: step.recoverySteps,
                 timeout: step.timeout
             ))
@@ -2745,10 +3463,27 @@ struct E2ERunner {
                     "visual_find",
                     "visual_read",
                     "visual_click",
+                    "visual_ground",
+                    "background_control_plan",
+                    "browser_cdp_launch",
+                    "browser_cdp_status",
+                    "browser_cdp_tabs",
+                    "browser_cdp_eval",
+                    "browser_cdp_click",
+                    "browser_cdp_type",
+                    "browser_cdp_read",
                     "recipe_suggest",
+                    "recipe_promote_run",
                     "memory_remember",
                     "memory_recall",
-                    "memory_recent"
+                    "memory_recent",
+                    "episode_recall",
+                    "context_graph_query",
+                    "app_skill_list",
+                    "app_skill_suggest",
+                    "trajectory_get",
+                    "trajectory_export",
+                    "computer_use_strategy"
                 ]
                 let missing = required.filter { !names.contains($0) }
                 return ToolResult(success: missing.isEmpty, evidence: missing.isEmpty ? "Locator and recipe-first tools are registered." : "Missing tools: \(missing.joined(separator: ","))", data: [
@@ -2811,6 +3546,34 @@ struct E2ERunner {
                     "run_id": runID,
                     "round": "\(loaded?.round ?? -1)",
                     "executed_actions": "\(loaded?.executedActionCount ?? -1)"
+                ])
+            },
+            EvalCase(id: "runtime-platform", title: "Runtime platform exposes strategy, skills, trajectory, and recipe promotion") {
+                let store = try EventStore.start(goal: "Open TextEdit and write hello", runID: "eval-runtime-\(UUID().uuidString)")
+                try store.append("AppAction", ["tool": "textedit_new_document", "arguments": "{}"])
+                try store.append("Observation", ["tool": "textedit_new_document", "success": "true", "evidence": "Opened TextEdit."])
+                try store.append("AppAction", ["tool": "textedit_set_text", "arguments": #"{"text":"hello"}"#])
+                try store.append("Observation", ["tool": "textedit_set_text", "success": "true", "evidence": "Set TextEdit text."])
+                let recipe = try RecipeStore.promoteRun(runID: store.runID)
+                let trajectory = try TrajectoryStore.summarize(runID: store.runID, limit: 10)
+                let episode = EpisodeStore.record(runID: store.runID, goal: store.goal, plan: TaskPlan.fallback(goal: store.goal), outcome: "eval", eventsText: try EventStore.readEventsText(runID: store.runID))
+                let graph = ContextGraphStore.query("TextEdit", limit: 10)
+                let skills = AppSkillStore.suggest(query: "Chrome DOM web", limit: 3)
+                let strategy = ComputerUseStrategy.suggest(goal: "use Chrome web app")
+                let ok = recipe.steps.count == 2 &&
+                    !trajectory.isEmpty &&
+                    episode.runID == store.runID &&
+                    !graph.nodes.isEmpty &&
+                    skills.contains(where: { $0.id == "browser-chrome" }) &&
+                    strategy["primary_controller"] == "browser_cdp_dom"
+                try? store.updateStatus("complete")
+                return ToolResult(success: ok, evidence: ok ? "Runtime platform stores and recalls durable automation context." : "Runtime platform check failed.", data: [
+                    "recipe_id": recipe.id,
+                    "trajectory_events": "\(trajectory.count)",
+                    "episode_id": episode.id,
+                    "graph_nodes": "\(graph.nodes.count)",
+                    "skills": skills.map(\.id).joined(separator: ","),
+                    "strategy": jsonStringValue(strategy)
                 ])
             },
             EvalCase(id: "recipe-exec-calendar-dry", title: "Recipe workflow engine dry verification") {
@@ -3272,6 +4035,10 @@ final class AIOSAppModel: ObservableObject {
     @Published var runs: [EventStore.RunSummary] = []
     @Published var selectedRunID = ""
     @Published var selectedEvents = ""
+    @Published var checkpointText = ""
+    @Published var trajectoryText = ""
+    @Published var memoryText = ""
+    @Published var appSkillsText = ""
     @Published var auditText = ""
     @Published var evalText = ""
     @Published var status = ""
@@ -3288,6 +4055,8 @@ final class AIOSAppModel: ObservableObject {
                 selectedRunID = first.id
             }
             loadSelected()
+            memoryText = jsonStringValue(MemoryStore.recent(limit: 12).map(\.dictionary))
+            appSkillsText = jsonStringValue(AppSkillStore.list().map(\.dictionary))
             auditText = AuditLog.readText(limit: 80)
             evalText = E2ERunner.lastRunText()
             let config = try AIOSConfig.load()
@@ -3370,9 +4139,20 @@ final class AIOSAppModel: ObservableObject {
     func loadSelected() {
         guard !selectedRunID.isEmpty else {
             selectedEvents = ""
+            checkpointText = ""
+            trajectoryText = ""
             return
         }
         selectedEvents = (try? EventStore.readEventsText(runID: selectedRunID)) ?? ""
+        let checkpointURL = EventStore.runsURL
+            .appendingPathComponent(selectedRunID, isDirectory: true)
+            .appendingPathComponent("checkpoint.json")
+        checkpointText = (try? String(contentsOf: checkpointURL, encoding: .utf8)) ?? "暂无 checkpoint"
+        if let events = try? TrajectoryStore.summarize(runID: selectedRunID, limit: 120) {
+            trajectoryText = jsonStringValue(events)
+        } else {
+            trajectoryText = "暂无轨迹"
+        }
     }
 
     func cancelSelected() {
@@ -3500,6 +4280,54 @@ struct AIOSAppView: View {
                             .font(.system(.caption, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
+                    }
+                    DisclosureGroup("驾驶舱") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Checkpoint")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.checkpointText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 100)
+                            Text("Trajectory")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.trajectoryText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 120)
+                        }
+                    }
+                    DisclosureGroup("上下文") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Memory")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.memoryText.isEmpty ? "暂无记忆" : model.memoryText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 90)
+                            Text("App Skills")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.appSkillsText.isEmpty ? "暂无 app skill" : model.appSkillsText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 110)
+                        }
                     }
                     DisclosureGroup("审计") {
                         ScrollView {
@@ -4468,6 +5296,7 @@ final class AgentLoop {
 
         let knownTools = Set(tools.definitions.compactMap(toolName))
         var finished = false
+        var paused = false
         var plan = initialPlan
         var round = checkpointRound
         var executedActionCount = checkpointExecutedActionCount
@@ -4552,6 +5381,23 @@ final class AgentLoop {
                     "tool": call.name,
                     "arguments": jsonLine(call.arguments)
                 ])
+
+                if call.name == "runtime_pause" {
+                    let pause = handleRuntimePause(
+                        call,
+                        goal: goal,
+                        plan: &plan,
+                        currentStepIndex: stepIndex,
+                        round: round,
+                        executedActionCount: executedActionCount,
+                        submittedExternalSends: submittedExternalSends,
+                        verificationState: verificationState
+                    )
+                    paused = true
+                    sawStepTerminalSignal = true
+                    messages.append(toolMessage(call: call, result: pause))
+                    break
+                }
 
                 if call.name == "task_complete" {
                     let gate = verificationState.taskCompletionGate(plan: plan)
@@ -4693,6 +5539,10 @@ final class AgentLoop {
                 break
             }
 
+            if paused {
+                break
+            }
+
             if !sawStepTerminalSignal, plan.steps[stepIndex].status == .running {
                 let verification = verifyStep(step: plan.steps[stepIndex], verificationState: verificationState)
                 emitEvent("Verification", [
@@ -4717,7 +5567,16 @@ final class AgentLoop {
             finished = try await requestFinalDelivery(messages: &messages, plan: plan, knownTools: knownTools, verificationState: verificationState)
         }
 
-        if finished {
+        if paused {
+            emitEvent("Delivery", [
+                "objective": plan.objective,
+                "status": "paused",
+                "plan": plan.summaryForPrompt()
+            ])
+            recordEpisode(goal: goal, plan: plan, outcome: "paused")
+            print("\nPaused and scheduled for resume.")
+            return false
+        } else if finished {
             emitEvent("Delivery", [
                 "objective": plan.objective,
                 "status": "complete"
@@ -4733,6 +5592,7 @@ final class AgentLoop {
                 "status": "incomplete",
                 "plan": plan.summaryForPrompt()
             ])
+            recordEpisode(goal: goal, plan: plan, outcome: "incomplete")
             saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
             print("\nStopped before all steps completed.")
             return false
@@ -4773,7 +5633,12 @@ final class AgentLoop {
                     "verification": schema("string", "How this step should be verified."),
                     "deliverable": schema("string", "Optional expected output or artifact.")
                 ])
-            ], required: ["reason", "steps"])
+            ], required: ["reason", "steps"]),
+            tool("runtime_pause", "Pause a long-running task, persist checkpoint, and optionally schedule the same run to resume later.", [
+                "reason": schema("string", "Why the task should pause."),
+                "resume_after_seconds": schema("number", "Optional seconds before requeueing the same run."),
+                "resume_at": schema("string", "Optional ISO-8601 timestamp to requeue the same run.")
+            ], required: ["reason"])
         ]
     }
 
@@ -4789,6 +5654,48 @@ final class AgentLoop {
             return running
         }
         return plan.steps.firstIndex(where: { $0.status == .pending || ($0.status == .failed && $0.attempts < 3) })
+    }
+
+    private func handleRuntimePause(
+        _ call: ToolCall,
+        goal: String,
+        plan: inout TaskPlan,
+        currentStepIndex: Int,
+        round: Int,
+        executedActionCount: Int,
+        submittedExternalSends: Set<String>,
+        verificationState: CompletionContractState
+    ) -> ToolResult {
+        let reason = string(call.arguments["reason"]) ?? "Paused by runtime request."
+        if plan.steps.indices.contains(currentStepIndex), plan.steps[currentStepIndex].status == .running {
+            plan.steps[currentStepIndex].status = .pending
+            plan.steps[currentStepIndex].evidence.append("Paused: \(reason)")
+        }
+        let resumeAt: String? = {
+            if let text = string(call.arguments["resume_at"]), !text.isEmpty {
+                return text
+            }
+            if let seconds = double(call.arguments["resume_after_seconds"]), seconds > 0 {
+                return isoDateString(Date().addingTimeInterval(seconds))
+            }
+            return nil
+        }()
+        saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
+        if let eventStore {
+            try? eventStore.append("RunPaused", [
+                "reason": reason,
+                "resume_at": resumeAt ?? ""
+            ])
+            try? eventStore.updateStatus(resumeAt == nil ? "paused" : "scheduled")
+            if let resumeAt {
+                try? TaskQueue.submitExisting(runID: eventStore.runID, goal: goal, notBefore: resumeAt)
+            }
+        }
+        return ToolResult(success: true, evidence: resumeAt == nil ? "Paused task: \(reason)" : "Paused task until \(resumeAt ?? ""): \(reason)", data: [
+            "runtime_state": resumeAt == nil ? "paused" : "scheduled",
+            "resume_at": resumeAt ?? "",
+            "reason": reason
+        ])
     }
 
     private func handleOrchestrationCall(
@@ -4991,6 +5898,7 @@ final class AgentLoop {
     }
 
     private func rememberTaskOutcome(goal: String, plan: TaskPlan) {
+        recordEpisode(goal: goal, plan: plan, outcome: plan.isComplete ? "complete" : "finished")
         guard let entry = try? MemoryStore.remember(
             kind: "task_outcome",
             scope: "goal",
@@ -5009,6 +5917,23 @@ final class AgentLoop {
         ])
     }
 
+    private func recordEpisode(goal: String, plan: TaskPlan, outcome: String) {
+        guard let eventStore,
+              let eventsText = try? EventStore.readEventsText(runID: eventStore.runID)
+        else { return }
+        let episode = EpisodeStore.record(
+            runID: eventStore.runID,
+            goal: goal,
+            plan: plan,
+            outcome: outcome,
+            eventsText: eventsText
+        )
+        emitEvent("EpisodeRecorded", [
+            "episode_id": episode.id,
+            "tools": episode.tools.joined(separator: ",")
+        ])
+    }
+
     private func executionUserPrompt(goal: String, plan: TaskPlan) -> String {
         let suggestions = (try? RecipeStore.suggest(goal: goal, limit: 3)) ?? []
         let recipeHint: String
@@ -5020,6 +5945,10 @@ final class AgentLoop {
             }.joined(separator: "\n")
         }
         let memoryHint = MemoryStore.contextText(for: goal, limit: 6)
+        let episodeHint = EpisodeStore.recall(query: goal, limit: 3)
+            .map { "- \($0.outcome) \($0.goal) tools=\($0.tools.prefix(5).joined(separator: ","))" }
+            .joined(separator: "\n")
+        let strategyHint = ComputerUseStrategy.suggest(goal: goal)
         return """
         UserGoal:
         \(goal)
@@ -5032,6 +5961,12 @@ final class AgentLoop {
 
         MemoryContext:
         \(memoryHint)
+
+        EpisodeContext:
+        \(episodeHint.isEmpty ? "No relevant prior episodes yet." : episodeHint)
+
+        ComputerUseStrategy:
+        \(jsonStringValue(strategyHint))
 
         Execute the plan step by step. For each step, choose tools, observe evidence, verify completion, and call step_complete when the step is done. Use plan_update when discovery changes the plan. Call task_complete only after delivery is done and verified.
         """
@@ -5128,8 +6063,10 @@ final class AgentLoop {
     Prefer dedicated app adapters for Finder, Safari, Chrome, WPS, LibreOffice, Preview, Notes, Mail, Calendar, Reminders, WeChat, Lark, QQ, Tencent Meeting, Baidu Netdisk, ToDesk, Docker, Shortcuts, and IDEs when they match the task.
     Before manual multi-step work, use recipe_suggest or the provided RecipeSuggestions and execute a matching recipe with recipe_execute when the required params are available. If no recipe fits or params are missing, continue manually and gather enough detail to make the workflow learnable.
     Use MemoryContext and memory_recall for stable user/app/workflow facts that may help the current task. Use memory_remember only for reusable, non-sensitive preferences or automation hints; never store passwords, tokens, keys, payment data, or private secrets.
-    For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background locator tools, foreground locator tools, visual grounding, menu/keyboard actions, and raw coordinates last.
+    Use computer_use_strategy and app_skill_suggest when the route is unclear. For browser/web app tasks, prefer browser_cdp_* DOM tools when a CDP endpoint is available; they can control tabs without cursor/focus. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, deep background channels (CDP or app scripting), background locator tools, foreground locator tools, visual grounding, menu/keyboard actions, and raw coordinates last.
     Before acting inside an app, call aios_automation_context or an app-specific observation tool to orient. Prefer aios_find, aios_inspect, aios_read, aios_background_click, aios_background_type, aios_click, aios_type, and aios_wait over coordinate tools. For long-running tasks, try the background tools first because they use AXPress/AXValue only and avoid stealing focus. Keep restore_focus=true unless the task explicitly needs the target app left focused.
+    For visual/canvas/icon-heavy interfaces, call visual_ground before visual_click; treat OCR-only matches as one signal, not the whole perception layer.
+    For work that must wait on time or external state, call runtime_pause with a resume time instead of busy-waiting through many steps.
 
     After every meaningful action, use returned evidence or observation tools to verify progress. Call step_complete only when a step is verified. Use step_failed or plan_update for recovery. Call task_complete only after all requested delivery is done and verified.
     Opening an app, searching a contact, clicking, typing, or staging content is process evidence only. It never proves the requested outcome by itself. Material outcomes require typed verified evidence such as external_message_sent, file_saved, calendar_event_created, reminder_created, note_created, mail_draft_created, shortcut_ran, shell_command_submitted, browser_url_visible, or app_opened when the user only asked to open an app.
@@ -5490,6 +6427,68 @@ final class ToolRegistry {
                 "scope": schema("string", "screen or window. Defaults to window when app_name/bundle_id is provided, otherwise screen."),
                 "max_results": schema("number", "Maximum visual matches to consider. Default 5.")
             ], required: ["query"]),
+            tool("visual_ground", "Ground a screen/window/image into actionable visual candidates: OCR text, rectangles, AX hints, and saliency regions.", [
+                "query": schema("string", "Optional text or intent to rank candidates."),
+                "app_name": schema("string", "Optional app window to capture."),
+                "bundle_id": schema("string", "Optional app bundle id."),
+                "scope": schema("string", "screen, window, or image."),
+                "path": schema("string", "Optional existing image path or screenshot output path."),
+                "max_results": schema("number", "Maximum candidates. Default 40.")
+            ]),
+            tool("background_control_plan", "Choose the deepest non-invasive control channel available for an app/task: CDP/DOM, app script, AX semantic, visual, or foreground coordinate fallback.", [
+                "goal": schema("string", "Task or step goal."),
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "url": schema("string", "Optional browser URL context.")
+            ], required: ["goal"]),
+            tool("browser_cdp_launch", "Launch an isolated Google Chrome profile with a remote debugging port for DOM/CDP background automation.", [
+                "port": schema("number", "Remote debugging port. Default 9222."),
+                "user_data_dir": schema("string", "Optional profile dir. Default under AIOS state."),
+                "url": schema("string", "Optional URL to open.")
+            ]),
+            tool("browser_cdp_status", "Check whether a Chrome DevTools Protocol endpoint is reachable.", [
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ]),
+            tool("browser_cdp_tabs", "List Chrome DevTools Protocol tabs.", [
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ]),
+            tool("browser_cdp_eval", "Evaluate JavaScript in a CDP tab by id, URL substring, or title substring without mouse/keyboard focus.", [
+                "script": schema("string", "JavaScript expression or async function body."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ], required: ["script"]),
+            tool("browser_cdp_click", "Click a DOM selector through CDP JavaScript without using screen coordinates.", [
+                "selector": schema("string", "CSS selector."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ], required: ["selector"]),
+            tool("browser_cdp_type", "Set or type text into a DOM selector through CDP JavaScript without using screen focus.", [
+                "selector": schema("string", "CSS selector."),
+                "text": schema("string", "Text to enter."),
+                "submit": schema("boolean", "Dispatch Enter after input. Default false."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ], required: ["selector", "text"]),
+            tool("browser_cdp_read", "Read text/value/html from a DOM selector through CDP.", [
+                "selector": schema("string", "CSS selector. Default body."),
+                "property": schema("string", "text, value, html, or attr:<name>. Default text."),
+                "tab_id": schema("string", "Optional CDP tab id."),
+                "url_contains": schema("string", "Optional URL substring."),
+                "title_contains": schema("string", "Optional title substring."),
+                "host": schema("string", "Host. Default 127.0.0.1."),
+                "port": schema("number", "Port. Default 9222.")
+            ]),
             tool("memory_remember", "Persist a reusable local memory such as an app preference, locator hint, or workflow note. Never store passwords, tokens, keys, payment data, or private secrets.", [
                 "kind": schema("string", "Memory kind, e.g. user_preference, app_hint, workflow_hint. Default user_note."),
                 "scope": schema("string", "Scope such as global, automation, workflow, or completion. Default global."),
@@ -5507,6 +6506,38 @@ final class ToolRegistry {
             tool("memory_recent", "Return the most recent durable local memories.", [
                 "limit": schema("number", "Maximum memories to return. Default 10.")
             ]),
+            tool("episode_recall", "Recall prior task episodes relevant to a goal/app/workflow.", [
+                "query": schema("string", "Search query."),
+                "limit": schema("number", "Maximum episodes. Default 8.")
+            ], required: ["query"]),
+            tool("context_graph_query", "Query the durable context graph of episodes, apps, tools, recipes, and relationships.", [
+                "query": schema("string", "Search query. Empty returns recent graph nodes."),
+                "limit": schema("number", "Maximum nodes. Default 20.")
+            ]),
+            tool("app_skill_list", "List app skill manifests with capabilities, tools, recipes, selectors, and permissions.", [
+                "query": schema("string", "Optional app/capability query."),
+                "limit": schema("number", "Maximum skills. Default 20.")
+            ]),
+            tool("app_skill_suggest", "Suggest app skill manifests for a task or app.", [
+                "query": schema("string", "Task, app, or capability query."),
+                "limit": schema("number", "Maximum skills. Default 8.")
+            ], required: ["query"]),
+            tool("trajectory_get", "Return a replayable summarized trajectory for a prior run.", [
+                "run_id": schema("string", "Run id."),
+                "limit": schema("number", "Maximum events. Default 200.")
+            ], required: ["run_id"]),
+            tool("trajectory_export", "Export a prior run trajectory to trajectories/<run_id>.json.", [
+                "run_id": schema("string", "Run id.")
+            ], required: ["run_id"]),
+            tool("recipe_promote_run", "Promote a successful run trajectory into a parameterized workflow recipe draft.", [
+                "run_id": schema("string", "Run id."),
+                "recipe_id": schema("string", "Optional recipe id."),
+                "title": schema("string", "Optional recipe title.")
+            ], required: ["run_id"]),
+            tool("computer_use_strategy", "Return the recommended planner/executor/perception/recipe/runtime strategy for a goal.", [
+                "goal": schema("string", "Task goal."),
+                "app": schema("string", "Optional app context.")
+            ], required: ["goal"]),
             tool("recipe_list", "List reusable AIOS workflow recipes.", [:]),
             tool("recipe_suggest", "Suggest reusable recipes that may match the user's goal before doing manual app automation.", [
                 "goal": schema("string", "User goal to match against recipe titles, templates, notes, and known workflow keywords."),
@@ -5868,12 +6899,46 @@ final class ToolRegistry {
                 return try visualRead(call.arguments)
             case "visual_click":
                 return try visualClick(call.arguments)
+            case "visual_ground":
+                return try visualGround(call.arguments)
+            case "background_control_plan":
+                return backgroundControlPlan(call.arguments)
+            case "browser_cdp_launch":
+                return try browserCDPLaunch(call.arguments)
+            case "browser_cdp_status":
+                return browserCDPStatus(call.arguments)
+            case "browser_cdp_tabs":
+                return try browserCDPTabs(call.arguments)
+            case "browser_cdp_eval":
+                return try browserCDPEval(call.arguments)
+            case "browser_cdp_click":
+                return try browserCDPClick(call.arguments)
+            case "browser_cdp_type":
+                return try browserCDPType(call.arguments)
+            case "browser_cdp_read":
+                return try browserCDPRead(call.arguments)
             case "memory_remember":
                 return try memoryRememberTool(call.arguments)
             case "memory_recall":
                 return memoryRecallTool(call.arguments)
             case "memory_recent":
                 return memoryRecentTool(call.arguments)
+            case "episode_recall":
+                return episodeRecallTool(call.arguments)
+            case "context_graph_query":
+                return contextGraphQueryTool(call.arguments)
+            case "app_skill_list":
+                return appSkillListTool(call.arguments)
+            case "app_skill_suggest":
+                return appSkillSuggestTool(call.arguments)
+            case "trajectory_get":
+                return try trajectoryGetTool(call.arguments)
+            case "trajectory_export":
+                return try trajectoryExportTool(call.arguments)
+            case "recipe_promote_run":
+                return try recipePromoteRunTool(call.arguments)
+            case "computer_use_strategy":
+                return computerUseStrategyTool(call.arguments)
             case "recipe_list":
                 return try recipeListTool()
             case "recipe_suggest":
@@ -7189,6 +8254,273 @@ final class ToolRegistry {
         return CGRect(x: x, y: y, width: width, height: height)
     }
 
+    private func visualGround(_ args: [String: Any]) throws -> ToolResult {
+        let maxResults = int(args["max_results"]) ?? 40
+        let query = string(args["query"]) ?? ""
+        let capture = try captureVisualSource(args)
+        guard let image = NSImage(contentsOfFile: capture.path),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else {
+            return ToolResult(success: false, evidence: "Could not load visual source image.", error: capture.path)
+        }
+
+        var candidates: [[String: String]] = []
+        let textMatches = try visualMatches(args, maxResults: max(120, maxResults)).matches
+        candidates.append(contentsOf: textMatches.map { match in
+            match.dictionary.merging([
+                "kind": "text",
+                "label": match.text,
+                "source": "vision_ocr",
+                "score": visualScore(label: match.text, query: query)
+            ]) { current, _ in current }
+        })
+
+        candidates.append(contentsOf: try visualRectangles(cgImage: cgImage, capture: capture, maxResults: maxResults).map { rect in
+            rect.merging([
+                "kind": "rectangle",
+                "source": "vision_rectangle",
+                "score": visualScore(label: rect["label"] ?? "rectangle", query: query)
+            ]) { current, _ in current }
+        })
+
+        let axResult = AIOSAutomationService.shared.find(args: args.merging(["max_results": min(40, maxResults)]) { current, _ in current })
+        if let locatorsText = axResult.data["locators"],
+           let data = locatorsText.data(using: .utf8),
+           let locators = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            candidates.append(contentsOf: locators.compactMap { raw in
+                let label = [string(raw["title"]), string(raw["value"]), string(raw["description"]), string(raw["identifier"])]
+                    .compactMap { $0 }
+                    .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? string(raw["role"]) ?? "AX element"
+                var item: [String: String] = [
+                    "id": string(raw["id"]) ?? "",
+                    "kind": "accessibility",
+                    "source": "ax_tree",
+                    "label": label,
+                    "role": string(raw["role"]) ?? "",
+                    "score": visualScore(label: label, query: query)
+                ]
+                for key in ["x", "y", "width", "height"] {
+                    if let value = raw[key] as? NSNumber { item[key] = value.stringValue }
+                    if let value = raw[key] as? String { item[key] = value }
+                }
+                return item
+            })
+        }
+
+        let ranked = candidates
+            .filter { candidate in
+                let label = [candidate["label"], candidate["text"], candidate["role"]].compactMap { $0 }.joined(separator: " ")
+                return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    normalizeForSearch(label).contains(normalizeForSearch(query)) ||
+                    candidate["kind"] == "rectangle"
+            }
+            .sorted { lhs, rhs in
+                (Double(lhs["score"] ?? "0") ?? 0) > (Double(rhs["score"] ?? "0") ?? 0)
+            }
+            .prefix(min(200, max(1, maxResults)))
+        return ToolResult(success: !ranked.isEmpty, evidence: ranked.isEmpty ? "No visual grounding candidates." : "Grounded \(ranked.count) visual candidate(s).", data: [
+            "scope": capture.scope,
+            "image_path": capture.path,
+            "query": query,
+            "candidates": jsonStringValue(Array(ranked))
+        ], error: ranked.isEmpty ? "no_visual_candidates" : nil)
+    }
+
+    private func visualRectangles(cgImage: CGImage, capture: (path: String, scope: String, bounds: CGRect), maxResults: Int) throws -> [[String: String]] {
+        let request = VNDetectRectanglesRequest()
+        request.maximumObservations = min(80, max(1, maxResults))
+        request.minimumConfidence = 0.45
+        request.minimumAspectRatio = 0.08
+        request.maximumAspectRatio = 12
+        let handler = VNImageRequestHandler(cgImage: cgImage)
+        try handler.perform([request])
+        let imageWidth = Double(cgImage.width)
+        let imageHeight = Double(cgImage.height)
+        let scaleX = imageWidth / max(1, capture.bounds.width)
+        let scaleY = imageHeight / max(1, capture.bounds.height)
+        return (request.results ?? []).enumerated().map { index, observation in
+            let rect = observation.boundingBox
+            let x = capture.bounds.minX + Double(rect.minX) * imageWidth / scaleX
+            let y = capture.bounds.minY + (1 - Double(rect.maxY)) * imageHeight / scaleY
+            let width = Double(rect.width) * imageWidth / scaleX
+            let height = Double(rect.height) * imageHeight / scaleY
+            return [
+                "id": "R\(index + 1)",
+                "label": "rectangle \(Int(width))x\(Int(height))",
+                "confidence": String(format: "%.3f", observation.confidence),
+                "x": "\(Int(x))",
+                "y": "\(Int(y))",
+                "width": "\(Int(width))",
+                "height": "\(Int(height))",
+                "center_x": "\(Int(x + width / 2))",
+                "center_y": "\(Int(y + height / 2))",
+                "image_path": capture.path
+            ]
+        }
+    }
+
+    private func visualScore(label: String, query: String) -> String {
+        let query = normalizeForSearch(query)
+        guard !query.isEmpty else { return "0.50" }
+        let label = normalizeForSearch(label)
+        if label.contains(query) { return "1.00" }
+        let tokens = query.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        let hits = tokens.filter { label.contains($0) }.count
+        return String(format: "%.2f", min(0.95, 0.35 + Double(hits) * 0.15))
+    }
+
+    private func backgroundControlPlan(_ args: [String: Any]) -> ToolResult {
+        let goal = string(args["goal"]) ?? ""
+        let app = string(args["app_name"]) ?? string(args["bundle_id"]) ?? ""
+        let strategy = ComputerUseStrategy.suggest(goal: goal, app: app)
+        let lowered = normalizeForSearch([goal, app, string(args["url"]) ?? ""].joined(separator: " "))
+        var channels: [[String: String]] = []
+        if lowered.contains("chrome") || lowered.contains("browser") || lowered.contains("web") || lowered.contains("figma") || lowered.contains("http") {
+            channels.append(["channel": "browser_cdp_dom", "depth": "deep_background", "tools": "browser_cdp_tabs,browser_cdp_eval,browser_cdp_click,browser_cdp_type,browser_cdp_read", "notes": "Controls DOM without cursor/focus when Chrome remote debugging is available."])
+        }
+        if !app.isEmpty {
+            channels.append(["channel": "app_script_or_scripting_bridge", "depth": "semantic_background", "tools": "sdef_lookup,scripting_bridge_probe,app-specific adapters", "notes": "Use native app scripting when exposed by the target app."])
+            channels.append(["channel": "accessibility_semantic", "depth": "non_intrusive_ax", "tools": "aios_background_click,aios_background_type,aios_find,aios_read", "notes": "Works when the app exposes AXPress/AXValue."])
+        }
+        channels.append(["channel": "visual_grounding", "depth": "perception_fallback", "tools": "visual_ground,visual_find,visual_read,visual_click", "notes": "Ground icons/layout/canvas regions, then use foreground action only when semantic channels are unavailable."])
+        channels.append(["channel": "foreground_coordinate", "depth": "last_resort", "tools": "ui_click,ui_drag,ui_keyboard_shortcut", "notes": "Use last because it can move cursor/focus."])
+        return ToolResult(success: true, evidence: "Built background control plan.", data: [
+            "strategy": jsonStringValue(strategy),
+            "channels": jsonStringValue(channels)
+        ])
+    }
+
+    private func browserCDPLaunch(_ args: [String: Any]) throws -> ToolResult {
+        let port = int(args["port"]) ?? 9222
+        let userDataDir = (string(args["user_data_dir"]) ?? EventStore.rootURL.appendingPathComponent("chrome-cdp-profile", isDirectory: true).path).expandingTildeInPath
+        try FileManager.default.createDirectory(atPath: userDataDir, withIntermediateDirectories: true)
+        var processArgs = ["-na", "Google Chrome", "--args", "--remote-debugging-port=\(port)", "--user-data-dir=\(userDataDir)"]
+        if let url = string(args["url"]), !url.isEmpty {
+            processArgs.append(url)
+        }
+        _ = try runProcess("/usr/bin/open", processArgs)
+        return ToolResult(success: true, evidence: "Launched Chrome CDP profile.", data: [
+            "port": "\(port)",
+            "user_data_dir": userDataDir,
+            "url": string(args["url"]) ?? ""
+        ])
+    }
+
+    private func browserCDPStatus(_ args: [String: Any]) -> ToolResult {
+        let endpoint = cdpEndpoint(args)
+        do {
+            let version = try ChromeCDP.version(endpoint: endpoint)
+            return ToolResult(success: true, evidence: "CDP endpoint is reachable.", data: version)
+        } catch {
+            return ToolResult(success: false, evidence: "CDP endpoint is not reachable.", data: ["endpoint": endpoint.base.absoluteString], error: error.localizedDescription, suggestion: "Run browser_cdp_launch or start Chrome with --remote-debugging-port.")
+        }
+    }
+
+    private func browserCDPTabs(_ args: [String: Any]) throws -> ToolResult {
+        let tabs = try ChromeCDP.tabs(endpoint: cdpEndpoint(args))
+        return ToolResult(success: true, evidence: "Listed \(tabs.count) CDP tab(s).", data: [
+            "tabs": jsonStringValue(tabs.map(\.dictionary))
+        ])
+    }
+
+    private func browserCDPEval(_ args: [String: Any]) throws -> ToolResult {
+        guard let script = string(args["script"]), !script.isEmpty else { throw RuntimeError("script is required") }
+        let tab = try selectedCDPTab(args)
+        let result = try ChromeCDP.evaluate(tab: tab, expression: script)
+        return ToolResult(success: true, evidence: "Evaluated JavaScript through CDP.", data: [
+            "tab_id": tab.id,
+            "title": tab.title,
+            "url": tab.url,
+            "result": result
+        ])
+    }
+
+    private func browserCDPClick(_ args: [String: Any]) throws -> ToolResult {
+        guard let selector = string(args["selector"]), !selector.isEmpty else { throw RuntimeError("selector is required") }
+        let script = """
+        (() => {
+          const el = document.querySelector(\(javascriptLiteral(selector)));
+          if (!el) return {ok:false, error:"selector_not_found"};
+          el.scrollIntoView({block:"center", inline:"center"});
+          el.dispatchEvent(new MouseEvent("mouseover", {bubbles:true}));
+          el.dispatchEvent(new MouseEvent("mousedown", {bubbles:true}));
+          el.click();
+          el.dispatchEvent(new MouseEvent("mouseup", {bubbles:true}));
+          return {ok:true, text:(el.innerText || el.value || el.getAttribute("aria-label") || el.tagName || "").slice(0,500)};
+        })()
+        """
+        var evalArgs = args
+        evalArgs["script"] = script
+        let result = try browserCDPEval(evalArgs)
+        return ToolResult(success: result.data["result"]?.contains(#""ok":true"#) == true, evidence: "Clicked DOM selector through CDP.", data: result.data, error: result.data["result"]?.contains(#""ok":true"#) == true ? nil : "selector_not_found")
+    }
+
+    private func browserCDPType(_ args: [String: Any]) throws -> ToolResult {
+        guard let selector = string(args["selector"]), !selector.isEmpty else { throw RuntimeError("selector is required") }
+        guard let text = string(args["text"]) else { throw RuntimeError("text is required") }
+        let submit = bool(args["submit"]) ?? false
+        let script = """
+        (() => {
+          const el = document.querySelector(\(javascriptLiteral(selector)));
+          if (!el) return {ok:false, error:"selector_not_found"};
+          el.scrollIntoView({block:"center", inline:"center"});
+          el.focus();
+          if ("value" in el) el.value = \(javascriptLiteral(text)); else el.textContent = \(javascriptLiteral(text));
+          el.dispatchEvent(new InputEvent("input", {bubbles:true, inputType:"insertText", data:\(javascriptLiteral(text))}));
+          el.dispatchEvent(new Event("change", {bubbles:true}));
+          if (\(submit ? "true" : "false")) el.dispatchEvent(new KeyboardEvent("keydown", {bubbles:true, key:"Enter", code:"Enter"}));
+          return {ok:true, chars:\(text.count)};
+        })()
+        """
+        var evalArgs = args
+        evalArgs["script"] = script
+        let result = try browserCDPEval(evalArgs)
+        return ToolResult(success: result.data["result"]?.contains(#""ok":true"#) == true, evidence: "Typed into DOM selector through CDP.", data: result.data, error: result.data["result"]?.contains(#""ok":true"#) == true ? nil : "selector_not_found")
+    }
+
+    private func browserCDPRead(_ args: [String: Any]) throws -> ToolResult {
+        let selector = string(args["selector"]) ?? "body"
+        let property = string(args["property"]) ?? "text"
+        let accessor: String
+        if property == "value" {
+            accessor = #""value" in el ? el.value : """#
+        } else if property == "html" {
+            accessor = "el.innerHTML || \"\""
+        } else if property.hasPrefix("attr:") {
+            accessor = "el.getAttribute(\(javascriptLiteral(String(property.dropFirst(5))))) || \"\""
+        } else {
+            accessor = "el.innerText || el.textContent || \"\""
+        }
+        let script = """
+        (() => {
+          const el = document.querySelector(\(javascriptLiteral(selector)));
+          if (!el) return {ok:false, error:"selector_not_found"};
+          return {ok:true, value:(\(accessor)).slice(0,8000)};
+        })()
+        """
+        var evalArgs = args
+        evalArgs["script"] = script
+        let result = try browserCDPEval(evalArgs)
+        let ok = result.data["result"]?.contains(#""ok":true"#) == true
+        return ToolResult(success: ok, evidence: ok ? "Read DOM selector through CDP." : "DOM selector not found.", data: result.data, error: ok ? nil : "selector_not_found")
+    }
+
+    private func cdpEndpoint(_ args: [String: Any]) -> ChromeCDP.Endpoint {
+        ChromeCDP.Endpoint(host: string(args["host"]) ?? "127.0.0.1", port: int(args["port"]) ?? 9222)
+    }
+
+    private func selectedCDPTab(_ args: [String: Any]) throws -> ChromeCDP.Tab {
+        let endpoint = cdpEndpoint(args)
+        let tabs = try ChromeCDP.tabs(endpoint: endpoint)
+        if let id = string(args["tab_id"]), let tab = tabs.first(where: { $0.id == id }) { return tab }
+        if let probe = string(args["url_contains"])?.lowercased(), let tab = tabs.first(where: { $0.url.lowercased().contains(probe) }) { return tab }
+        if let probe = string(args["title_contains"])?.lowercased(), let tab = tabs.first(where: { $0.title.lowercased().contains(probe) }) { return tab }
+        guard let first = tabs.first(where: { $0.type == "page" }) ?? tabs.first else {
+            throw RuntimeError("No CDP tabs found.")
+        }
+        return first
+    }
+
     private func memoryRememberTool(_ args: [String: Any]) throws -> ToolResult {
         guard let key = string(args["key"]), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw RuntimeError("key is required")
@@ -7234,6 +8566,82 @@ final class ToolRegistry {
             evidence: entries.isEmpty ? "No durable memories yet." : "Returned \(entries.count) recent durable memory item(s).",
             data: ["memories": jsonStringValue(entries.map(\.dictionary))]
         )
+    }
+
+    private func episodeRecallTool(_ args: [String: Any]) -> ToolResult {
+        let query = string(args["query"]) ?? ""
+        let episodes = EpisodeStore.recall(query: query, limit: int(args["limit"]) ?? 8)
+        return ToolResult(success: true, evidence: episodes.isEmpty ? "No matching episodes." : "Recalled \(episodes.count) episode(s).", data: [
+            "query": query,
+            "episodes": jsonStringValue(episodes.map(\.dictionary))
+        ])
+    }
+
+    private func contextGraphQueryTool(_ args: [String: Any]) -> ToolResult {
+        let query = string(args["query"]) ?? ""
+        let graph = ContextGraphStore.query(query, limit: int(args["limit"]) ?? 20)
+        return ToolResult(success: true, evidence: "Returned \(graph.nodes.count) context node(s) and \(graph.edges.count) edge(s).", data: [
+            "query": query,
+            "nodes": jsonStringValue(graph.nodes.map { ["id": $0.id, "kind": $0.kind, "label": $0.label, "attributes": jsonStringValue($0.attributes), "updated_at": $0.updatedAt] }),
+            "edges": jsonStringValue(graph.edges.map { ["from": $0.from, "to": $0.to, "relation": $0.relation, "weight": String(format: "%.2f", $0.weight), "updated_at": $0.updatedAt] })
+        ])
+    }
+
+    private func appSkillListTool(_ args: [String: Any]) -> ToolResult {
+        let query = string(args["query"]) ?? ""
+        let limit = int(args["limit"]) ?? 20
+        let skills = query.isEmpty ? Array(AppSkillStore.list().prefix(limit)) : AppSkillStore.suggest(query: query, limit: limit)
+        return ToolResult(success: true, evidence: "Returned \(skills.count) app skill manifest(s).", data: [
+            "skills": jsonStringValue(skills.map(\.dictionary))
+        ])
+    }
+
+    private func appSkillSuggestTool(_ args: [String: Any]) -> ToolResult {
+        let query = string(args["query"]) ?? ""
+        let skills = AppSkillStore.suggest(query: query, limit: int(args["limit"]) ?? 8)
+        return ToolResult(success: true, evidence: skills.isEmpty ? "No matching app skill." : "Suggested \(skills.count) app skill(s).", data: [
+            "query": query,
+            "skills": jsonStringValue(skills.map(\.dictionary))
+        ])
+    }
+
+    private func trajectoryGetTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
+        let events = try TrajectoryStore.summarize(runID: runID, limit: int(args["limit"]) ?? 200)
+        return ToolResult(success: true, evidence: "Returned \(events.count) trajectory event(s).", data: [
+            "run_id": runID,
+            "events": jsonStringValue(events)
+        ])
+    }
+
+    private func trajectoryExportTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
+        let url = try TrajectoryStore.export(runID: runID)
+        return ToolResult(success: true, evidence: "Exported trajectory.", data: [
+            "run_id": runID,
+            "path": url.path
+        ])
+    }
+
+    private func recipePromoteRunTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
+        let recipe = try RecipeStore.promoteRun(
+            runID: runID,
+            recipeID: string(args["recipe_id"]),
+            title: string(args["title"])
+        )
+        return ToolResult(success: true, evidence: "Promoted run into recipe \(recipe.id).", data: [
+            "recipe_id": recipe.id,
+            "required_params": recipe.requiredParams.joined(separator: ","),
+            "steps": "\(recipe.steps.count)",
+            "recipe": recipe.jsonString
+        ])
+    }
+
+    private func computerUseStrategyTool(_ args: [String: Any]) -> ToolResult {
+        let goal = string(args["goal"]) ?? ""
+        let app = string(args["app"]) ?? ""
+        return ToolResult(success: true, evidence: "Selected computer-use strategy.", data: ComputerUseStrategy.suggest(goal: goal, app: app))
     }
 
     private func recipeListTool() throws -> ToolResult {
@@ -9302,6 +10710,170 @@ struct VisualMatch {
     }
 }
 
+final class CDPResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<String, Error>
+
+    init(_ result: Result<String, Error>) {
+        self.stored = result
+    }
+
+    func set(_ result: Result<String, Error>) {
+        lock.lock()
+        stored = result
+        lock.unlock()
+    }
+
+    func get() -> Result<String, Error> {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
+
+struct ChromeCDP {
+    struct Endpoint {
+        let host: String
+        let port: Int
+
+        var base: URL {
+            URL(string: "http://\(host):\(port)")!
+        }
+    }
+
+    struct Tab {
+        let id: String
+        let type: String
+        let title: String
+        let url: String
+        let webSocketDebuggerURL: String
+
+        var dictionary: [String: String] {
+            [
+                "id": id,
+                "type": type,
+                "title": title,
+                "url": url,
+                "web_socket_debugger_url": webSocketDebuggerURL
+            ]
+        }
+    }
+
+    static func version(endpoint: Endpoint) throws -> [String: String] {
+        let url = endpoint.base.appendingPathComponent("json/version")
+        let data = try Data(contentsOf: url)
+        guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RuntimeError("Invalid CDP version response.")
+        }
+        return raw.reduce(into: [String: String]()) { result, pair in
+            if let value = pair.value as? String {
+                result[pair.key] = value
+            } else if let value = pair.value as? NSNumber {
+                result[pair.key] = value.stringValue
+            }
+        }
+    }
+
+    static func tabs(endpoint: Endpoint) throws -> [Tab] {
+        let url = endpoint.base.appendingPathComponent("json/list")
+        let data = try Data(contentsOf: url)
+        guard let raw = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw RuntimeError("Invalid CDP tabs response.")
+        }
+        return raw.compactMap { item in
+            guard let id = string(item["id"]),
+                  let ws = string(item["webSocketDebuggerUrl"])
+            else { return nil }
+            return Tab(
+                id: id,
+                type: string(item["type"]) ?? "",
+                title: string(item["title"]) ?? "",
+                url: string(item["url"]) ?? "",
+                webSocketDebuggerURL: ws
+            )
+        }
+    }
+
+    static func evaluate(tab: Tab, expression: String, timeout: TimeInterval = 8) throws -> String {
+        guard let url = URL(string: tab.webSocketDebuggerURL) else {
+            throw RuntimeError("Invalid CDP websocket URL.")
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        let session = URLSession(configuration: .ephemeral)
+        let socket = session.webSocketTask(with: url)
+        let output = CDPResultBox(.failure(RuntimeError("CDP websocket timed out.")))
+        let payload: [String: Any] = [
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": [
+                "expression": expression,
+                "awaitPromise": true,
+                "returnByValue": true,
+                "userGesture": true
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? "{}"
+        socket.resume()
+        socket.send(.string(text)) { error in
+            if let error {
+                output.set(.failure(error))
+                semaphore.signal()
+                return
+            }
+            socket.receive { result in
+                defer {
+                    socket.cancel(with: .normalClosure, reason: nil)
+                    session.invalidateAndCancel()
+                    semaphore.signal()
+                }
+                switch result {
+                case .failure(let error):
+                    output.set(.failure(error))
+                case .success(let message):
+                    let responseText: String
+                    switch message {
+                    case .string(let text):
+                        responseText = text
+                    case .data(let data):
+                        responseText = String(data: data, encoding: .utf8) ?? ""
+                    @unknown default:
+                        responseText = ""
+                    }
+                    output.set(.success(extractEvaluationResult(responseText)))
+                }
+            }
+        }
+        _ = semaphore.wait(timeout: .now() + timeout)
+        return try output.get().get()
+    }
+
+    private static func extractEvaluationResult(_ responseText: String) -> String {
+        guard let data = responseText.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return responseText }
+        if let error = raw["error"] {
+            return jsonStringValue(error)
+        }
+        guard let result = raw["result"] as? [String: Any],
+              let nested = result["result"] as? [String: Any]
+        else { return responseText }
+        if let value = nested["value"] {
+            return jsonStringValue(value)
+        }
+        if let description = nested["description"] as? String {
+            return description
+        }
+        return jsonStringValue(nested)
+    }
+}
+
+private func javascriptLiteral(_ value: String) -> String {
+    let data = (try? JSONSerialization.data(withJSONObject: [value])) ?? Data("[\"\"]".utf8)
+    let encoded = String(data: data, encoding: .utf8) ?? "[\"\"]"
+    return String(encoded.dropFirst().dropLast())
+}
+
 struct RuntimeError: LocalizedError {
     let message: String
 
@@ -9529,6 +11101,17 @@ private func isoDateString(_ date: Date) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.string(from: date)
+}
+
+private func isoDate(from text: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractional.date(from: text) {
+        return date
+    }
+    let plain = ISO8601DateFormatter()
+    plain.formatOptions = [.withInternetDateTime]
+    return plain.date(from: text)
 }
 
 private func truncateMiddle(_ text: String, maxCharacters: Int) -> String {
