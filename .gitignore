@@ -1,0 +1,64 @@
+# Swift / Xcode build products
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcarchive
+*.xcresult
+*.dSYM/
+
+# AIOS local runtime state
+.aios-state/
+.home/
+runs.sqlite
+*.sqlite
+*.sqlite3
+*.db
+audit.jsonl
+*.log
+/queue/
+/runs/
+/snapshots/
+/learning/
+/evals/
+/config.json
+/recipes/
+
+# Local research checkouts; keep only your own source in the public repo.
+00-references/
+*.zip
+
+# Local secrets and machine-specific config
+.env
+.env.*
+!.env.example
+*.env
+*.local
+*.key
+*.pem
+*.p8
+*.cer
+*.crt
+*.der
+*.p12
+*.mobileprovision
+.envrc
+.netrc
+.npmrc
+.pypirc
+id_rsa*
+id_ed25519*
+secrets/
+credentials/
+*.secret
+*.secrets
+
+# Captured screenshots / UI traces can contain private data
+aios-screen*.png
+aios-ocr*.png
+aios-observe*.png
+snapshots/
+
+# macOS noise
+.DS_Store
