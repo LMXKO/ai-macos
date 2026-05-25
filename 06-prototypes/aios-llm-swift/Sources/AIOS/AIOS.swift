@@ -9,7 +9,9 @@ import SQLite3
 import SwiftUI
 import Vision
 
-private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+private func sqliteTransientDestructor() -> sqlite3_destructor_type {
+    unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+}
 
 @main
 struct AIOS {
@@ -31,6 +33,11 @@ struct AIOS {
 
         if args.first == "setup" {
             ToolRegistry().setupWizard(requestPermissions: args.contains("--request-permissions"))
+            return
+        }
+
+        if args.first == "mcp" {
+            AIOSMCPServer().run()
             return
         }
 
@@ -134,6 +141,7 @@ struct AIOS {
       swift run aios doctor
       swift run aios doctor --request-permissions
       swift run aios setup --request-permissions
+      swift run aios mcp
       swift run aios app
       swift run aios host
       swift run aios daemon
@@ -145,6 +153,7 @@ struct AIOS {
       swift run aios config show
       swift run aios config set-key
       swift run aios recipe list
+      swift run aios recipe suggest "把文档导出 PDF"
       swift run aios recipe run send-file-to-contact '{"app":"wechat","recipient":"Example Contact","path":"~/Downloads/example.docx"}'
       swift run aios eval run
       swift run aios learn start "send file to contact"
@@ -311,6 +320,17 @@ struct AIOS {
             case "show":
                 guard let id = args.dropFirst().first else { throw RuntimeError("Usage: aios recipe show <id>") }
                 print(try RecipeStore.read(id).jsonString)
+            case "suggest":
+                let goal = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !goal.isEmpty else { throw RuntimeError("Usage: aios recipe suggest \"<goal>\"") }
+                let suggestions = try RecipeStore.suggest(goal: goal)
+                if suggestions.isEmpty {
+                    print("No matching recipes.")
+                } else {
+                    for suggestion in suggestions {
+                        print("\(suggestion.recipe.id)\tscore=\(suggestion.score)\t\(suggestion.recipe.title)\tparams=\(suggestion.recipe.requiredParams.joined(separator: ","))\tmatched=\(suggestion.matchedTerms.joined(separator: ","))")
+                    }
+                }
             case "run":
                 guard args.count >= 2 else { throw RuntimeError("Usage: aios recipe run <id> '{...params...}'") }
                 let id = args[1]
@@ -995,7 +1015,7 @@ struct SQLiteRunIndex {
     }
 
     private static func bindText(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
-        sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, index, value, -1, sqliteTransientDestructor())
     }
 
     private static func columnText(_ statement: OpaquePointer?, _ index: Int32) -> String {
@@ -1165,6 +1185,23 @@ struct Recipe: Codable {
     }
 }
 
+struct RecipeSuggestion {
+    let recipe: Recipe
+    let score: Int
+    let matchedTerms: [String]
+
+    var summary: [String: String] {
+        [
+            "id": recipe.id,
+            "title": recipe.title,
+            "goal_template": recipe.goalTemplate,
+            "required_params": recipe.requiredParams.joined(separator: ","),
+            "score": "\(score)",
+            "matched_terms": matchedTerms.joined(separator: ",")
+        ]
+    }
+}
+
 struct RecipeStore {
     static let defaults: [Recipe] = [
         Recipe(
@@ -1251,6 +1288,54 @@ struct RecipeStore {
     static func read(_ id: String) throws -> Recipe {
         try seedDefaults(overwrite: false)
         return try JSONDecoder().decode(Recipe.self, from: Data(contentsOf: recipeURL(id)))
+    }
+
+    static func suggest(goal: String, limit: Int = 5) throws -> [RecipeSuggestion] {
+        let goalText = normalizedText(goal)
+        guard !goalText.isEmpty else { return [] }
+        let tokens = tokens(from: goalText)
+        let recipes = try list()
+        let scored = recipes.compactMap { recipe -> RecipeSuggestion? in
+            let corpus = normalizedText([
+                recipe.id,
+                recipe.title,
+                recipe.goalTemplate,
+                recipe.notes,
+                recipe.requiredParams.joined(separator: " ")
+            ].joined(separator: " "))
+            var score = 0
+            var matched = Set<String>()
+
+            if goalText.contains(normalizedText(recipe.id)) {
+                score += 12
+                matched.insert(recipe.id)
+            }
+            let titleText = normalizedText(recipe.title)
+            if !titleText.isEmpty, goalText.contains(titleText) || titleText.contains(goalText) {
+                score += 8
+                matched.insert(recipe.title)
+            }
+
+            for token in tokens where token.count >= 2 && corpus.contains(token) {
+                score += 2
+                matched.insert(token)
+            }
+
+            for keyword in keywords(for: recipe.id) where goalText.contains(keyword) {
+                score += 3
+                matched.insert(keyword)
+            }
+
+            if score == 0 { return nil }
+            return RecipeSuggestion(recipe: recipe, score: score, matchedTerms: matched.sorted())
+        }
+        return scored
+            .sorted {
+                if $0.score == $1.score { return $0.recipe.id < $1.recipe.id }
+                return $0.score > $1.score
+            }
+            .prefix(max(1, limit))
+            .map { $0 }
     }
 
     static func renderGoal(recipeID: String, params: [String: Any]) throws -> String {
@@ -1582,6 +1667,41 @@ struct RecipeStore {
     private static func recipeURL(_ id: String) -> URL {
         EventStore.recipesURL.appendingPathComponent("\(id).json")
     }
+
+    private static func normalizedText(_ text: String) -> String {
+        text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func tokens(from text: String) -> [String] {
+        let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols)
+        return text
+            .components(separatedBy: separators)
+            .flatMap { chunk -> [String] in
+                let trimmed = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return [] }
+                if trimmed.count <= 8 { return [trimmed] }
+                let phrases = ["发送", "发给", "文件", "附件", "计划", "方案", "同步", "导出", "转换", "文档", "pdf", "日历", "日程", "会议", "提醒", "微信", "飞书", "qq"]
+                return [trimmed] + phrases.filter { trimmed.contains($0) }
+            }
+    }
+
+    private static func keywords(for id: String) -> [String] {
+        switch id {
+        case "send-file-to-contact":
+            return ["send", "发送", "发给", "文件", "附件", "contact", "联系人", "wechat", "微信", "lark", "飞书", "qq", "chat", "聊天"]
+        case "write-plan-and-sync":
+            return ["plan", "计划", "方案", "梳理", "同步", "汇报", "发送", "wechat", "微信", "lark", "飞书", "qq"]
+        case "export-document-pdf":
+            return ["pdf", "导出", "转成", "转换", "文档", "doc", "docx", "word", "保存"]
+        case "create-calendar-event":
+            return ["calendar", "日历", "日程", "会议", "提醒", "event", "schedule", "创建"]
+        default:
+            return []
+        }
+    }
 }
 
 struct LearningSession: Codable {
@@ -1636,6 +1756,14 @@ struct LearningStore {
 
     static func stop(recipeID: String) throws -> Recipe {
         let session = try active()
+        guard !session.steps.isEmpty else {
+            throw RuntimeError("Learning session has no recorded tool steps.")
+        }
+        let failedSteps = session.steps.enumerated().filter { !$0.element.success }
+        guard failedSteps.isEmpty else {
+            let failedSummary = failedSteps.map { "S\($0.offset + 1):\($0.element.tool)" }.joined(separator: ", ")
+            throw RuntimeError("Learning session contains failed tool steps and cannot be saved as a verified recipe: \(failedSummary)")
+        }
         let steps = session.steps.enumerated().map { index, learned in
             RecipeStep(
                 id: "S\(index + 1)",
@@ -1645,14 +1773,15 @@ struct LearningStore {
                 verifyTool: nil,
                 verifyArguments: nil,
                 waitCondition: nil,
-                waitValue: nil
+                waitValue: nil,
+                verifyExpression: "success"
             )
         }
         let recipe = try RecipeStore.saveLearnedRecipe(
             id: recipeID,
             title: session.title,
             steps: steps,
-            notes: "Learned from \(session.steps.count) recorded tool step(s) at \(isoDateString(Date()))."
+            notes: "Learned from \(session.steps.count) verified successful tool step(s) at \(isoDateString(Date()))."
         )
         let archiveURL = EventStore.learningURL.appendingPathComponent("\(session.id).json")
         try FileManager.default.moveItem(at: activeURL, to: archiveURL)
@@ -1796,7 +1925,7 @@ struct RawEventRecorder {
             id: recipeID,
             title: title,
             steps: steps,
-            notes: "Learned from \(box.events.count) raw CGEvent(s). Raw log: \(rawURL.path)"
+            notes: "Unverified raw CGEvent recipe learned from \(box.events.count) event(s). Raw log: \(rawURL.path). Run recipe exec and add verifiers before relying on it."
         )
     }
 
@@ -1946,6 +2075,25 @@ struct E2ERunner {
                 try RecipeStore.seedDefaults(overwrite: false)
                 let goal = try RecipeStore.renderGoal(recipeID: "export-document-pdf", params: ["path": "~/Downloads/a.docx", "outdir": "~/Downloads"])
                 return ToolResult(success: goal.contains("PDF"), evidence: "Rendered recipe goal.", data: ["goal": goal])
+            },
+            EvalCase(id: "recipe-suggest", title: "Recipe suggestions match user goals") {
+                let suggestions = try RecipeStore.suggest(goal: "把文档导出成 PDF")
+                let top = suggestions.first?.recipe.id ?? ""
+                return ToolResult(success: top == "export-document-pdf", evidence: "Top recipe suggestion: \(top).", data: [
+                    "top": top,
+                    "suggestions": jsonStringValue(suggestions.map(\.summary))
+                ])
+            },
+            EvalCase(id: "automation-tools-registered", title: "Locator automation tools are registered") {
+                let names = Set(ToolRegistry().definitions.compactMap { definition in
+                    (definition["function"] as? [String: Any])?["name"] as? String
+                })
+                let required = ["aios_automation_context", "aios_find", "aios_inspect", "aios_read", "aios_click", "aios_type", "aios_wait", "recipe_suggest"]
+                let missing = required.filter { !names.contains($0) }
+                return ToolResult(success: missing.isEmpty, evidence: missing.isEmpty ? "Locator and recipe-first tools are registered." : "Missing tools: \(missing.joined(separator: ","))", data: [
+                    "required": required.joined(separator: ","),
+                    "missing": missing.joined(separator: ",")
+                ])
             },
             EvalCase(id: "recipe-exec-calendar-dry", title: "Recipe workflow engine dry verification") {
                 let recipe = try RecipeStore.read("create-calendar-event")
@@ -4041,12 +4189,24 @@ final class AgentLoop {
     }
 
     private func executionUserPrompt(goal: String, plan: TaskPlan) -> String {
-        """
+        let suggestions = (try? RecipeStore.suggest(goal: goal, limit: 3)) ?? []
+        let recipeHint: String
+        if suggestions.isEmpty {
+            recipeHint = "No pre-matched recipe. Still call recipe_suggest if the current step looks reusable."
+        } else {
+            recipeHint = suggestions.map { suggestion in
+                "- \(suggestion.recipe.id) score=\(suggestion.score) params=\(suggestion.recipe.requiredParams.joined(separator: ",")) goal=\(suggestion.recipe.goalTemplate)"
+            }.joined(separator: "\n")
+        }
+        return """
         UserGoal:
         \(goal)
 
         TaskPlan:
         \(plan.summaryForPrompt())
+
+        RecipeSuggestions:
+        \(recipeHint)
 
         Execute the plan step by step. For each step, choose tools, observe evidence, verify completion, and call step_complete when the step is done. Use plan_update when discovery changes the plan. Call task_complete only after delivery is done and verified.
         """
@@ -4141,7 +4301,9 @@ final class AgentLoop {
 
     Use tools to operate real macOS apps. Prefer app-specific functional tools over raw UI actions.
     Prefer dedicated app adapters for Finder, Safari, Chrome, WPS, LibreOffice, Preview, Notes, Mail, Calendar, Reminders, WeChat, Lark, QQ, Tencent Meeting, Baidu Netdisk, ToDesk, Docker, Shortcuts, and IDEs when they match the task.
-    For apps without a dedicated adapter, use universal macOS tools: app discovery, open files/URLs, clipboard, menu clicks, keyboard shortcuts, AX tree inspection, AXPress, and screenshots.
+    Before manual multi-step work, use recipe_suggest or the provided RecipeSuggestions and execute a matching recipe with recipe_execute when the required params are available. If no recipe fits or params are missing, continue manually and gather enough detail to make the workflow learnable.
+    For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, locator tools, menu/keyboard actions, snapshots/screenshots/OCR, and raw coordinates last.
+    Before acting inside an app, call aios_automation_context or an app-specific observation tool to orient. Prefer aios_find, aios_inspect, aios_read, aios_click, aios_type, and aios_wait over coordinate tools. Keep restore_focus=true unless the task explicitly needs the target app left focused.
 
     After every meaningful action, use returned evidence or observation tools to verify progress. Call step_complete only when a step is verified. Use step_failed or plan_update for recovery. Call task_complete only after all requested delivery is done and verified.
     Opening an app, searching a contact, clicking, typing, or staging content is process evidence only. It never proves the requested outcome by itself. Material outcomes require typed verified evidence such as external_message_sent, file_saved, calendar_event_created, reminder_created, note_created, mail_draft_created, shortcut_ran, shell_command_submitted, browser_url_visible, or app_opened when the user only asked to open an app.
@@ -4234,6 +4396,63 @@ final class ToolRegistry {
     var definitions: [[String: Any]] {
         [
             tool("aios_context", "Get frontmost app, bundle id, pid, and visible window titles.", [:]),
+            tool("aios_automation_context", "Get frontmost/target app context and visible windows for locator-based automation.", [
+                "app_name": schema("string", "Optional target app name."),
+                "bundle_id": schema("string", "Optional target app bundle id.")
+            ]),
+            tool("aios_find", "Find Accessibility UI elements and return reusable locator ids with roles, labels, and bounds.", [
+                "query": schema("string", "Optional label/title/value/identifier substring."),
+                "role": schema("string", "Optional AX role filter such as AXButton, AXTextField, or AXMenuItem."),
+                "app_name": schema("string", "Optional target app name. Defaults to frontmost app."),
+                "bundle_id": schema("string", "Optional target app bundle id."),
+                "max_depth": schema("number", "Maximum AX tree depth. Default 8."),
+                "max_results": schema("number", "Maximum matches. Default 50.")
+            ]),
+            tool("aios_inspect", "Inspect a UI element by locator id or a fresh query and return attributes/actions.", [
+                "locator_id": schema("string", "Locator id returned by aios_find."),
+                "query": schema("string", "Optional fallback label/title/value/identifier substring."),
+                "role": schema("string", "Optional AX role filter."),
+                "app_name": schema("string", "Optional target app name."),
+                "bundle_id": schema("string", "Optional target app bundle id."),
+                "max_depth": schema("number", "Maximum AX tree depth. Default 8.")
+            ]),
+            tool("aios_read", "Read UI text from a located element or from the target app's AX tree.", [
+                "locator_id": schema("string", "Optional locator id returned by aios_find."),
+                "query": schema("string", "Optional label/title/value/identifier substring."),
+                "role": schema("string", "Optional AX role filter."),
+                "app_name": schema("string", "Optional target app name."),
+                "bundle_id": schema("string", "Optional target app bundle id."),
+                "max_chars": schema("number", "Maximum text characters. Default 6000."),
+                "max_depth": schema("number", "Maximum AX tree depth. Default 8."),
+                "max_results": schema("number", "Maximum elements to read. Default 120.")
+            ]),
+            tool("aios_click", "Click a UI element by locator id or query using AXPress first and coordinate fallback.", [
+                "locator_id": schema("string", "Locator id returned by aios_find."),
+                "query": schema("string", "Optional label/title/value/identifier substring."),
+                "role": schema("string", "Optional AX role filter."),
+                "app_name": schema("string", "Optional target app name."),
+                "bundle_id": schema("string", "Optional target app bundle id."),
+                "restore_focus": schema("boolean", "Restore the previously frontmost app after the action. Default true.")
+            ]),
+            tool("aios_type", "Type text into a UI element by locator id or query using AXValue first and paste fallback.", [
+                "text": schema("string", "Text to enter."),
+                "locator_id": schema("string", "Locator id returned by aios_find."),
+                "query": schema("string", "Optional label/title/value/identifier substring."),
+                "role": schema("string", "Optional AX role filter."),
+                "app_name": schema("string", "Optional target app name."),
+                "bundle_id": schema("string", "Optional target app bundle id."),
+                "restore_focus": schema("boolean", "Restore the previously frontmost app after the action. Default true.")
+            ], required: ["text"]),
+            tool("aios_wait", "Wait for a locator/UI/app condition with structured evidence.", [
+                "condition": schema("string", "element_exists, element_gone, text_contains, frontmost_app, or window_title_contains."),
+                "value": schema("string", "Expected text/app/window substring when required."),
+                "query": schema("string", "Optional element query for element/text conditions."),
+                "role": schema("string", "Optional AX role filter."),
+                "app_name": schema("string", "Optional target app name."),
+                "bundle_id": schema("string", "Optional target app bundle id."),
+                "timeout": schema("number", "Seconds to wait. Default 10."),
+                "interval": schema("number", "Polling interval seconds. Default 0.5.")
+            ], required: ["condition"]),
             tool("aios_list_apps", "List installed macOS applications visible to this user. Use query to filter by name or bundle id.", [
                 "query": schema("string", "Optional case-insensitive app name or bundle id filter."),
                 "include_system": schema("boolean", "Whether to include /System/Applications apps. Default true.")
@@ -4407,6 +4626,10 @@ final class ToolRegistry {
                 "path": schema("string", "Optional screenshot output path.")
             ]),
             tool("recipe_list", "List reusable AIOS workflow recipes.", [:]),
+            tool("recipe_suggest", "Suggest reusable recipes that may match the user's goal before doing manual app automation.", [
+                "goal": schema("string", "User goal to match against recipe titles, templates, notes, and known workflow keywords."),
+                "limit": schema("number", "Maximum suggestions. Default 5.")
+            ], required: ["goal"]),
             tool("recipe_execute", "Execute a reusable step-based workflow recipe directly.", [
                 "id": schema("string", "Recipe id."),
                 "params_json": schema("string", "Recipe params as a JSON object string.")
@@ -4656,6 +4879,20 @@ final class ToolRegistry {
             switch call.name {
             case "aios_context":
                 return context()
+            case "aios_automation_context":
+                return AIOSAutomationService.shared.context(args: call.arguments)
+            case "aios_find":
+                return AIOSAutomationService.shared.find(args: call.arguments)
+            case "aios_inspect":
+                return AIOSAutomationService.shared.inspect(args: call.arguments)
+            case "aios_read":
+                return AIOSAutomationService.shared.read(args: call.arguments)
+            case "aios_click":
+                return AIOSAutomationService.shared.click(args: call.arguments)
+            case "aios_type":
+                return AIOSAutomationService.shared.type(args: call.arguments)
+            case "aios_wait":
+                return AIOSAutomationService.shared.wait(args: call.arguments)
             case "aios_list_apps":
                 return try listApps(call.arguments)
             case "aios_list_running_apps":
@@ -4740,6 +4977,8 @@ final class ToolRegistry {
                 return try ocrScreen(call.arguments)
             case "recipe_list":
                 return try recipeListTool()
+            case "recipe_suggest":
+                return try recipeSuggestTool(call.arguments)
             case "recipe_execute":
                 return try recipeExecuteTool(call.arguments)
             case "learn_start":
@@ -5913,6 +6152,18 @@ final class ToolRegistry {
             ]
         }
         return ToolResult(success: true, evidence: "Listed \(recipes.count) recipe(s).", data: ["recipes": jsonStringValue(recipes)])
+    }
+
+    private func recipeSuggestTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError("goal is required")
+        }
+        let suggestions = try RecipeStore.suggest(goal: goal, limit: int(args["limit"]) ?? 5)
+        return ToolResult(
+            success: true,
+            evidence: suggestions.isEmpty ? "No matching recipe suggestions." : "Suggested \(suggestions.count) matching recipe(s).",
+            data: ["suggestions": jsonStringValue(suggestions.map(\.summary))]
+        )
     }
 
     private func recipeExecuteTool(_ args: [String: Any]) throws -> ToolResult {

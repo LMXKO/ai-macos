@@ -72,6 +72,7 @@ Examples:
 
 ```bash
 swift run --disable-sandbox aios recipe list
+swift run --disable-sandbox aios recipe suggest "把文档导出成 PDF"
 swift run --disable-sandbox aios recipe run send-file-to-contact '{"app":"wechat","recipient":"Example Contact","path":"~/Downloads/example.docx"}'
 swift run --disable-sandbox aios recipe exec export-document-pdf '{"path":"~/Downloads/example.docx","outdir":"~/Downloads"}'
 swift run --disable-sandbox aios eval list
@@ -105,6 +106,8 @@ Recipes are now real step workflows, not only prompt templates. Each recipe can 
 - `recoverySteps`
 - deterministic stop-on-failure behavior with structured evidence
 
+The executor is recipe-first: it receives local recipe suggestions in the task prompt and can call `recipe_suggest` / `recipe_execute` before falling back to manual app automation.
+
 ## Learning
 
 AIOS can record successful tool-level workflows and raw UI events, then save them as reusable recipes:
@@ -120,6 +123,17 @@ swift run --disable-sandbox aios learn record-events "raw UI flow" --seconds 8 -
 ```
 
 Tool learning records exact app tools and arguments. Raw event learning uses a listen-only CGEvent tap, captures mouse/key events plus optional frontmost/AX context, writes the raw trace, and emits a replayable recipe with `ui_click` and keyboard steps. It requires Input Monitoring permission.
+Tool-level learning now saves only verified successful tool steps; failed recorded steps are rejected instead of becoming recipes. Raw event recipes are explicitly marked unverified until replayed and strengthened with verifiers.
+
+## MCP Server
+
+The same `ToolRegistry` is exposed over MCP stdio:
+
+```bash
+swift run --disable-sandbox aios mcp
+```
+
+The server supports `initialize`, `ping`, `tools/list`, and `tools/call`, so other agents can discover and call the macOS tools without a separate bridge.
 
 ## Config And Keychain
 
@@ -172,7 +186,9 @@ swift run --disable-sandbox aios host
 swift run --disable-sandbox aios submit "Draft a short project plan and send it to Example Contact"
 swift run --disable-sandbox aios runs
 swift run --disable-sandbox aios show <run_id>
+swift run --disable-sandbox aios mcp
 swift run --disable-sandbox aios tool aios_list_apps '{"query":"WeChat"}'
+swift run --disable-sandbox aios tool aios_find '{"query":"Send","role":"AXButton","max_results":5}'
 swift run --disable-sandbox aios "Create a TextEdit document with hello aios, save it to ~/Desktop/aios-demo.txt, and reveal it in Finder."
 ```
 
@@ -199,6 +215,13 @@ By project policy, sending chat messages, running Shortcuts, writing Calendar ev
 Universal macOS tools:
 
 - `aios_context`: frontmost app, bundle id, pid, visible window titles
+- `aios_automation_context`: frontmost or target app context plus visible windows for locator-based work
+- `aios_find`: find AX elements and return reusable locator ids
+- `aios_inspect`: inspect a locator's attributes and actions
+- `aios_read`: read text from a locator or app AX tree
+- `aios_click`: AXPress-first click with coordinate fallback
+- `aios_type`: AXValue-first text entry with paste fallback
+- `aios_wait`: wait for locator, text, app, or window conditions
 - `aios_list_apps`: installed app inventory from `/Applications`, `~/Applications`, and `/System/Applications`
 - `aios_list_running_apps`
 - `aios_app_windows`
@@ -241,6 +264,7 @@ Universal macOS tools:
 - `ocr_image`
 - `ocr_screen`
 - `recipe_list`
+- `recipe_suggest`
 - `recipe_execute`
 - `learn_start`
 - `learn_record_tool`

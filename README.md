@@ -223,6 +223,15 @@ Recommended initial target:
 - audit log for every observation, decision, action, and verification
 - demo workflow across at least two unrelated apps
 
+Current Swift prototype status:
+
+- CLI, menu-bar host, daemon worker, and minimal SwiftUI task console
+- shared `ToolRegistry` for CLI, agent loop, and MCP stdio server
+- locator-based Accessibility driver: context, find, inspect, read, click, type, wait
+- recipe-first execution with recipe suggestions and deterministic recipe execution
+- verified tool-level learning; raw event learning is marked unverified until replayed
+- structured run events, audit log, policy gate, snapshots, OCR, app adapters, and eval cases
+
 ### Suggested First Demo
 
 Use safe local applications:
