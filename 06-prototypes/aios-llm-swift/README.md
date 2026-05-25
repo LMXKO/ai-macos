@@ -29,6 +29,7 @@ The prototype now has a tiny always-on host and durable run history:
 - `aios show <run_id>`: prints the JSONL event stream for one run.
 - `aios cancel <run_id>`: cancels a queued run.
 - `aios retry <run_id>`: submits a new run with the same goal.
+- `aios resume <run_id>`: requeues an existing run and resumes from its checkpoint when available.
 - `aios launch-agent install|uninstall|status`: manages a user LaunchAgent for background queue draining.
 
 State lives at `~/Library/Application Support/AIOS` by default:
@@ -36,9 +37,11 @@ State lives at `~/Library/Application Support/AIOS` by default:
 - `queue/*.json`: submitted goals waiting for the host/daemon.
 - `runs/<run_id>/events.jsonl`: durable events such as `UserGoal`, `TaskPlan`, `ToolSelection`, `PolicyCheck`, `AppAction`, `Observation`, `Verification`, `Recovery`, `NextStep`, and `Delivery`.
 - `runs/<run_id>/summary.json`: goal, status, timestamps, and event path.
+- `runs/<run_id>/checkpoint.json`: current plan, step status, verification state, action count, and duplicate-send guard for long-task resume.
 - `runs.sqlite`: SQLite run index for fast task list/history lookup; JSON event streams remain the source of detailed truth.
 - `snapshots/<snapshot_id>/snapshot.json`: persistent UI snapshots with stable element ids.
 - `recipes/*.json`: reusable task recipes.
+- `memory/memory.jsonl`: durable non-sensitive task/app/workflow memory.
 - `evals/last-run.json`: last E2E smoke/eval result.
 - `evals/real-e2e-cases.json`: opt-in real app cases, disabled by default.
 - `learning/raw/*.json`: raw CGEvent learning traces.
@@ -54,10 +57,41 @@ For local testing, set `AIOS_STATE_DIR` to redirect state into a scratch directo
 - run list with statuses
 - selected run event stream
 - audit tail
-- cancel/retry/refresh/open state folder
+- cancel/resume/retry/refresh/open state folder
 - LLM base URL/model/max-step settings
 
 The UI is intentionally plain. The product center is still the user goal and the verified event stream.
+
+## Long-Running Tasks
+
+AIOS persists execution state after planning, after tool results, after verification changes, and before incomplete exits. A crash, host restart, or max-step stop can be continued with:
+
+```bash
+swift run --disable-sandbox aios resume <run_id>
+swift run --disable-sandbox aios host
+```
+
+The checkpoint includes the current `TaskPlan`, completed/failed/running step state, verification contracts, action count, and already-submitted external sends. This lets a resumed task continue from the pending or failed step without blindly repeating verified work or resending the same external message.
+
+## Memory
+
+AIOS keeps a local JSONL memory store for reusable, non-sensitive context:
+
+- successful recipes and locator hints
+- non-invasive AX actions that worked for a target app
+- visual OCR fallback hints
+- verified completion effects
+- user or workflow notes explicitly saved through `memory_remember`
+
+The executor receives relevant `MemoryContext` before each run and can call:
+
+```bash
+swift run --disable-sandbox aios tool memory_remember '{"kind":"workflow_hint","key":"TextEdit input","value":"Use AXValue before paste fallback."}'
+swift run --disable-sandbox aios tool memory_recall '{"query":"TextEdit input","limit":5}'
+swift run --disable-sandbox aios tool memory_recent '{"limit":10}'
+```
+
+Memory rejects secret-like values such as passwords, bearer tokens, private keys, API keys, and payment terms. It is local runtime state, not source-controlled project data.
 
 ## Recipes And Eval
 
@@ -120,9 +154,10 @@ swift run --disable-sandbox aios learn stop send-file-learned
 swift run --disable-sandbox aios recipe exec send-file-learned '{}'
 
 swift run --disable-sandbox aios learn record-events "raw UI flow" --seconds 8 --recipe-id learned-ui-flow
+swift run --disable-sandbox aios learn record-events "exact raw UI flow" --seconds 8 --recipe-id raw-ui-flow --raw
 ```
 
-Tool learning records exact app tools and arguments. Raw event learning uses a listen-only CGEvent tap, captures mouse/key events plus optional frontmost/AX context, writes the raw trace, and emits a replayable recipe with `ui_click` and keyboard steps. It requires Input Monitoring permission.
+Tool learning records exact app tools and arguments. Raw event learning uses a listen-only CGEvent tap, captures mouse/key events plus optional frontmost/AX context, writes the raw trace, and by default synthesizes semantic recipe steps: `aios_background_click` / `aios_background_type` first, `visual_click` and foreground locator fallback next, raw coordinates last. Consecutive printable key events are folded into text-entry steps when possible. Use `--raw` to save exact mouse/keyboard replay. It requires Input Monitoring permission.
 Tool-level learning now saves only verified successful tool steps; failed recorded steps are rejected instead of becoming recipes. Raw event recipes are explicitly marked unverified until replayed and strengthened with verifiers.
 
 ## MCP Server
@@ -164,6 +199,8 @@ The runtime is now a two-phase orchestrator rather than a raw ReAct loop:
 - Verification: the model can call `step_complete`; Swift also auto-verifies simple successful tool evidence.
 - Recovery / NextStep: failed steps are retried up to three attempts, and the model can call `plan_update` to append recovery steps.
 - Delivery: `task_complete` ends the run only after requested delivery is done and verified.
+- Checkpoint: the current plan and verification state are persisted throughout the run and cleared only after verified completion.
+- Memory: successful reusable hints are saved locally and recalled into future tasks when relevant.
 - Action-not-performed hardening: if the model claims success in prose without tool calls, AIOS emits `ActionNotPerformed` and asks for a concrete app/observation tool. `task_complete` is rejected before tool evidence exists.
 
 The CLI emits structured event lines such as `UserGoal`, `TaskPlan`, `StepQueue`, `ToolSelection`, `PolicyCheck`, `AppAction`, `Observation`, `Verification`, `Recovery`, `NextStep`, and `Delivery`. This gives us a Codex-style event stream that can later back a SwiftUI task timeline.
@@ -186,9 +223,11 @@ swift run --disable-sandbox aios host
 swift run --disable-sandbox aios submit "Draft a short project plan and send it to Example Contact"
 swift run --disable-sandbox aios runs
 swift run --disable-sandbox aios show <run_id>
+swift run --disable-sandbox aios resume <run_id>
 swift run --disable-sandbox aios mcp
 swift run --disable-sandbox aios tool aios_list_apps '{"query":"WeChat"}'
 swift run --disable-sandbox aios tool aios_find '{"query":"Send","role":"AXButton","max_results":5}'
+swift run --disable-sandbox aios tool visual_read '{"scope":"screen","max_results":5}'
 swift run --disable-sandbox aios "Create a TextEdit document with hello aios, save it to ~/Desktop/aios-demo.txt, and reveal it in Finder."
 ```
 
@@ -221,6 +260,8 @@ Universal macOS tools:
 - `aios_read`: read text from a locator or app AX tree
 - `aios_click`: AXPress-first click with coordinate fallback
 - `aios_type`: AXValue-first text entry with paste fallback
+- `aios_background_click`: AXPress-only non-invasive click; restores focus and never uses coordinates
+- `aios_background_type`: AXValue-only non-invasive text entry; restores focus and never clicks/pastes
 - `aios_wait`: wait for locator, text, app, or window conditions
 - `aios_list_apps`: installed app inventory from `/Applications`, `~/Applications`, and `/System/Applications`
 - `aios_list_running_apps`
@@ -263,6 +304,12 @@ Universal macOS tools:
 - `snapshot_press`
 - `ocr_image`
 - `ocr_screen`
+- `visual_find`: OCR text with screen/window bounds for visual fallback
+- `visual_read`: OCR screen/window text and regions
+- `visual_click`: foreground coordinate click on a visual OCR match
+- `memory_remember`
+- `memory_recall`
+- `memory_recent`
 - `recipe_list`
 - `recipe_suggest`
 - `recipe_execute`

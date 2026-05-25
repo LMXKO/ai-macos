@@ -152,6 +152,7 @@ final class AIOSAutomationService {
 
     func click(args: [String: Any]) -> ToolResult {
         let restoreFocus = boolean(args["restore_focus"]) ?? true
+        let allowCoordinateFallback = boolean(args["allow_coordinate_fallback"]) ?? true
         guard let located = resolveLocatedElement(args: args) else {
             return ToolResult(success: false, evidence: "No matching UI element to click.", error: "element_not_found")
         }
@@ -166,6 +167,17 @@ final class AIOSAutomationService {
                 data: compactData(locatorDict(located.locator).merging(["method": "AXPress"]) { lhs, _ in lhs }),
                 error: error == .success ? nil : "AXPress \(error.rawValue)",
                 suggestion: error == .success ? nil : "Try a coordinate click or a different locator."
+            )
+        }
+
+        guard allowCoordinateFallback else {
+            previous?.restore()
+            return ToolResult(
+                success: false,
+                evidence: "No semantic AXPress action is available for \(located.locator.id); coordinate fallback is disabled.",
+                data: compactData(locatorDict(located.locator).merging(["method": "semantic_only"]) { lhs, _ in lhs }),
+                error: "semantic_action_unavailable",
+                suggestion: "Use a visual fallback tool, a different locator, or explicitly allow coordinate fallback for foreground operation."
             )
         }
 
@@ -188,6 +200,7 @@ final class AIOSAutomationService {
             return ToolResult(success: false, evidence: "No text provided.", error: "text_required")
         }
         let restoreFocus = boolean(args["restore_focus"]) ?? true
+        let allowPasteFallback = boolean(args["allow_paste_fallback"]) ?? true
         guard let located = resolveLocatedElement(args: args) else {
             return ToolResult(success: false, evidence: "No matching UI element to type into.", error: "element_not_found")
         }
@@ -200,6 +213,17 @@ final class AIOSAutomationService {
                 success: true,
                 evidence: "Set AXValue on \(located.locator.id).",
                 data: compactData(locatorDict(located.locator).merging(["method": "AXValue"]) { lhs, _ in lhs })
+            )
+        }
+
+        guard allowPasteFallback else {
+            previous?.restore()
+            return ToolResult(
+                success: false,
+                evidence: "Could not set AXValue on \(located.locator.id); paste fallback is disabled.",
+                data: compactData(locatorDict(located.locator).merging(["method": "semantic_only"]) { lhs, _ in lhs }),
+                error: "semantic_type_unavailable",
+                suggestion: "Use a different editable locator, a visual fallback, or explicitly allow paste fallback for foreground operation."
             )
         }
 
@@ -281,6 +305,20 @@ final class AIOSAutomationService {
             error: "timeout",
             suggestion: "Observe context, broaden the locator, or use screenshot/OCR fallback."
         )
+    }
+
+    func backgroundClick(args: [String: Any]) -> ToolResult {
+        var safeArgs = args
+        safeArgs["restore_focus"] = true
+        safeArgs["allow_coordinate_fallback"] = false
+        return click(args: safeArgs)
+    }
+
+    func backgroundType(args: [String: Any]) -> ToolResult {
+        var safeArgs = args
+        safeArgs["restore_focus"] = true
+        safeArgs["allow_paste_fallback"] = false
+        return type(args: safeArgs)
     }
 
     private func resolveLocatedElement(args: [String: Any]) -> AIOSLocatedElement? {
