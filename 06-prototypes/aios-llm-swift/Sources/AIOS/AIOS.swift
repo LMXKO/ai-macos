@@ -55,8 +55,7 @@ struct AIOS {
         }
 
         if args.first == "daemon" {
-            let host = AIOSHost(menuBar: false)
-            await host.run()
+            await daemonCommand(args: Array(args.dropFirst()))
             return
         }
 
@@ -150,6 +149,9 @@ struct AIOS {
       swift run aios app
       swift run aios host
       swift run aios daemon
+      swift run aios daemon status
+      swift run aios daemon tick
+      swift run aios daemon schedule "wait for the download and summarize it" --after-seconds 60
       swift run aios submit "Draft a short project plan and send it to Example Contact"
       swift run aios runs
       swift run aios cancel <run_id>
@@ -179,6 +181,32 @@ struct AIOS {
                           base_url|model|api_key_or_$ENV
       AIOS_MAX_STEPS      default: 20
     """
+
+    @MainActor
+    private static func daemonCommand(args: [String]) async {
+        let subcommand = args.first ?? "run"
+        do {
+            switch subcommand {
+            case "run", "start":
+                let host = AIOSHost(menuBar: false)
+                await host.run()
+            case "status":
+                print(jsonStringValue(LongRunDaemonStore.status().dictionary))
+            case "tick", "once":
+                print(jsonStringValue(try LongRunDaemonStore.tick().dictionary))
+            case "schedule":
+                let goal = positionalArguments(args.dropFirst()).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !goal.isEmpty else { throw RuntimeError("Usage: aios daemon schedule \"<goal>\" [--after-seconds N]") }
+                let scheduled = try LongRunDaemonStore.schedule(goal: goal, afterSeconds: doubleArgument(args, name: "--after-seconds") ?? 0)
+                print(jsonStringValue(scheduled))
+            default:
+                throw RuntimeError("Unknown daemon command: \(subcommand)")
+            }
+        } catch {
+            fputs("Daemon failed: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
 
     @MainActor
     private static func runSingleTool(args: [String]) {
@@ -452,7 +480,15 @@ struct AIOS {
                     includeAX: !args.contains("--no-ax"),
                     synthesize: !args.contains("--raw")
                 )
-                print(recipe.jsonString)
+                if !args.contains("--no-learn-program"), !args.contains("--raw") {
+                    let learned = try RecipeLearningEngine.learnRecipe(recipeID: recipe.id, sourceRunID: "raw-events:\(recipe.id)", title: recipe.title)
+                    print(jsonStringValue([
+                        "recipe": recipe.jsonString,
+                        "learned_program": jsonStringValue(learned)
+                    ]))
+                } else {
+                    print(recipe.jsonString)
+                }
             case "stop":
                 let recipeID = args.dropFirst().first ?? "learned-\(Int(Date().timeIntervalSince1970))"
                 let recipe = try LearningStore.stop(recipeID: recipeID)

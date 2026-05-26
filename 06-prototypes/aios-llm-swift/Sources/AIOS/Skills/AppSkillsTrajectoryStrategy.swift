@@ -123,7 +123,8 @@ struct TrajectoryStore {
                 "tool": event["tool"] ?? "",
                 "success": event["success"] ?? "",
                 "evidence": truncateMiddle(event["evidence"] ?? event["reason"] ?? event["summary"] ?? "", maxCharacters: 500),
-                "screenshot": event["path"] ?? event["image_path"] ?? ""
+                "screenshot": event["screen_path"] ?? event["path"] ?? event["image_path"] ?? "",
+                "evidence_manifest": event["event"] == "TrajectoryEvidence" ? (event["path"] ?? "") : ""
             ]
         }
     }

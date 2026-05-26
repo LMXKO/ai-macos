@@ -638,6 +638,12 @@ final class ToolRegistry {
             tool("memory_shadow_digest", "Return a Shadow-style digest of recent episodes, memories, and context graph state for long tasks.", [
                 "limit": schema("number", "Maximum items. Default 20.")
             ]),
+            tool("memory_shadow_capture", "Persist a Shadow-style memory capture for a run/goal so long tasks can resume with episode/context graph continuity.", [
+                "run_id": schema("string", "Optional run id."),
+                "goal": schema("string", "Optional goal."),
+                "trigger": schema("string", "Capture trigger such as start, pause, complete, or manual."),
+                "limit": schema("number", "Maximum items folded into the digest. Default 20.")
+            ]),
             tool("session_timeline", "Project a run's raw event stream into a Codex-style structured session timeline.", [
                 "run_id": schema("string", "Run id."),
                 "limit": schema("number", "Maximum session events. Default 200.")
@@ -851,6 +857,15 @@ final class ToolRegistry {
                 "query": schema("string", "Grounding target query."),
                 "image_path": schema("string", "Optional screenshot/image path.")
             ]),
+            tool("visual_grounder_run", "Run the multimodal visual grounder through local VLM command, AIOS_VISION_* sidecar, or built-in OCR/AX/layout fallback and cache the UI map.", [
+                "surface": schema("string", "Surface hint such as canvas, chart, image, native, or web."),
+                "query": schema("string", "Grounding target query."),
+                "image_path": schema("string", "Optional screenshot/image path."),
+                "app_name": schema("string", "Optional app window to capture for built-in fallback."),
+                "bundle_id": schema("string", "Optional app bundle id to capture for built-in fallback."),
+                "scope": schema("string", "screen, window, or image. Defaults to image when image_path is provided."),
+                "max_results": schema("number", "Maximum candidates. Default 80.")
+            ]),
             tool("visual_ui_map_query", "Query cached visual UI maps by semantic target.", [
                 "query": schema("string", "Semantic target query."),
                 "limit": schema("number", "Maximum UI maps. Default 10.")
@@ -860,6 +875,11 @@ final class ToolRegistry {
                 "recipe_id": schema("string", "Optional target recipe id."),
                 "title": schema("string", "Optional learned recipe title.")
             ], required: ["run_id"]),
+            tool("recipe_learn_recipe", "Generalize, compile, score, and index an existing recipe as a reusable recipe program.", [
+                "recipe_id": schema("string", "Existing recipe id."),
+                "source_run_id": schema("string", "Optional source run or recording id."),
+                "title": schema("string", "Optional learned recipe title.")
+            ], required: ["recipe_id"]),
             tool("recipe_program_select", "Select the best reusable recipe programs for a goal using suggestions, compile validity, and learning records.", [
                 "goal": schema("string", "Task goal."),
                 "limit": schema("number", "Maximum candidates. Default 5.")
@@ -892,6 +912,34 @@ final class ToolRegistry {
                 "url": schema("string", "Optional URL."),
                 "extraction_schema": schema("string", "Optional extraction schema description or JSON.")
             ], required: ["goal"]),
+            tool("browser_agent_observe", "Stagehand-like executable observe primitive: collect DOM/action map through CDP and persist it in the browser agent cache.", [
+                "goal": schema("string", "Web task goal."),
+                "query": schema("string", "Optional element/text query."),
+                "max_results": schema("number", "Maximum interactive elements. Default 80."),
+                "port": schema("number", "Optional Chrome remote debugging port.")
+            ], required: ["goal"]),
+            tool("browser_agent_act", "Stagehand-like executable act primitive: observe, resolve selector/query, act through CDP, retry with self-healing, and cache selector evidence.", [
+                "goal": schema("string", "Web task goal."),
+                "action": schema("string", "click, type, submit, or read."),
+                "query": schema("string", "Natural language/text target query."),
+                "selector": schema("string", "Optional CSS selector."),
+                "text": schema("string", "Text for type/submit."),
+                "port": schema("number", "Optional Chrome remote debugging port.")
+            ], required: ["goal", "action"]),
+            tool("browser_agent_extract", "Stagehand-like executable extract primitive: read structured page data through CDP and persist the extraction.", [
+                "goal": schema("string", "Web task goal."),
+                "selector": schema("string", "Optional root selector. Default body."),
+                "schema": schema("string", "Extraction schema label or JSON schema hint."),
+                "port": schema("number", "Optional Chrome remote debugging port.")
+            ], required: ["goal"]),
+            tool("browser_agent_wait", "Stagehand-like executable wait primitive: wait for text, selector, URL, expression, or network idle through CDP and persist the result.", [
+                "goal": schema("string", "Web task goal."),
+                "condition": schema("string", "selector, text, url_contains, expression, or network_idle."),
+                "value": schema("string", "Condition value."),
+                "timeout": schema("number", "Timeout seconds. Default 15."),
+                "interval": schema("number", "Polling interval seconds. Default 0.5."),
+                "port": schema("number", "Optional Chrome remote debugging port.")
+            ], required: ["goal", "condition"]),
             tool("browser_agent_observation", "Record a browser agent observation into the durable DOM/action cache.", [
                 "url": schema("string", "Page URL."),
                 "goal": schema("string", "Task goal."),
@@ -957,7 +1005,8 @@ final class ToolRegistry {
                 "recipe_id": schema("string", "Recipe id to save."),
                 "seconds": schema("number", "Recording duration. Default 8."),
                 "include_ax": schema("boolean", "Capture frontmost app and focused AX context. Default true."),
-                "synthesize": schema("boolean", "Synthesize semantic locator recipe steps with coordinate fallbacks. Default true.")
+                "synthesize": schema("boolean", "Synthesize semantic locator recipe steps with coordinate fallbacks. Default true."),
+                "learn_program": schema("boolean", "Immediately generalize, compile, score, and index the recipe program for reuse. Default true when synthesize=true.")
             ], required: ["recipe_id"]),
             tool("learn_stop", "Stop the active learning session and save it as a recipe.", [
                 "recipe_id": schema("string", "Recipe id to save.")
@@ -1385,6 +1434,8 @@ final class ToolRegistry {
                 return try memoryEpisodeConsolidateTool(call.arguments)
             case "memory_shadow_digest":
                 return memoryShadowDigestTool(call.arguments)
+            case "memory_shadow_capture":
+                return try memoryShadowCaptureTool(call.arguments)
             case "session_timeline":
                 return try sessionTimelineTool(call.arguments)
             case "session_export":
@@ -1479,10 +1530,14 @@ final class ToolRegistry {
                 return visualGrounderProfilesTool()
             case "visual_grounder_session":
                 return visualGrounderSessionTool(call.arguments)
+            case "visual_grounder_run":
+                return try visualGrounderRunTool(call.arguments)
             case "visual_ui_map_query":
                 return visualUIMapQueryTool(call.arguments)
             case "recipe_learn_once":
                 return try recipeLearnOnceTool(call.arguments)
+            case "recipe_learn_recipe":
+                return try recipeLearnRecipeTool(call.arguments)
             case "recipe_program_select":
                 return recipeProgramSelectTool(call.arguments)
             case "long_task_state":
@@ -1497,6 +1552,14 @@ final class ToolRegistry {
                 return memoryPreferenceDigestTool(call.arguments)
             case "browser_agent_plan":
                 return browserAgentPlanTool(call.arguments)
+            case "browser_agent_observe":
+                return try browserAgentObserveTool(call.arguments)
+            case "browser_agent_act":
+                return try browserAgentActTool(call.arguments)
+            case "browser_agent_extract":
+                return try browserAgentExtractTool(call.arguments)
+            case "browser_agent_wait":
+                return try browserAgentWaitTool(call.arguments)
             case "browser_agent_observation":
                 return try browserAgentObservationTool(call.arguments)
             case "browser_agent_snapshot":
@@ -2912,6 +2975,8 @@ final class ToolRegistry {
                 ranked = VisualGrounding.rank(ranked + sidecarCandidates, query: query, limit: min(200, max(1, maxResults)))
             }
         }
+        let candidatesJSON = jsonStringValue(Array(ranked))
+        let cachedMap = try? VisualPerceptionEngine.cacheUIMap(imagePath: capture.path, query: query, candidatesJSON: candidatesJSON)
         return ToolResult(success: !ranked.isEmpty, evidence: ranked.isEmpty ? "No visual grounding candidates." : "Grounded \(ranked.count) visual candidate(s).", data: [
             "scope": capture.scope,
             "image_path": capture.path,
@@ -2920,7 +2985,8 @@ final class ToolRegistry {
             "candidate_schema": jsonStringValue(VisualGrounding.schema),
             "sidecar_configured": VisionSidecar.isConfigured ? "true" : "false",
             "sidecar_answer": sidecarAnswer,
-            "candidates": jsonStringValue(Array(ranked))
+            "ui_map_path": cachedMap?.path ?? "",
+            "candidates": candidatesJSON
         ], error: ranked.isEmpty ? "no_visual_candidates" : nil)
     }
 
@@ -4070,7 +4136,19 @@ final class ToolRegistry {
     }
 
     private func memoryShadowDigestTool(_ args: [String: Any]) -> ToolResult {
-        ToolResult(success: true, evidence: "Built Shadow-style memory digest.", data: EpisodeContextEngine.shadowDigest(limit: int(args["limit"]) ?? 20))
+        var digest = EpisodeContextEngine.shadowDigest(limit: int(args["limit"]) ?? 20)
+        digest["recent_captures"] = jsonStringValue(ShadowMemoryStore.recent(limit: min(20, max(1, int(args["limit"]) ?? 20))))
+        return ToolResult(success: true, evidence: "Built Shadow-style memory digest.", data: digest)
+    }
+
+    private func memoryShadowCaptureTool(_ args: [String: Any]) throws -> ToolResult {
+        let capture = try ShadowMemoryStore.capture(
+            runID: string(args["run_id"]) ?? "",
+            goal: string(args["goal"]) ?? "",
+            trigger: string(args["trigger"]) ?? "manual",
+            limit: int(args["limit"]) ?? 20
+        )
+        return ToolResult(success: true, evidence: "Persisted Shadow-style memory capture.", data: capture)
     }
 
     private func sessionTimelineTool(_ args: [String: Any]) throws -> ToolResult {
@@ -4560,8 +4638,111 @@ final class ToolRegistry {
     }
 
     private func backgroundDriverDispatchTool(_ args: [String: Any]) throws -> ToolResult {
-        let data = try BackgroundDriverBridge.dispatch(args: args)
-        return ToolResult(success: data["status"] != "failed", evidence: "Built background driver dispatch envelope.", data: data, error: data["status"] == "failed" ? "background_driver_failed" : nil)
+        var data = try BackgroundDriverBridge.dispatch(args: args)
+        guard (bool(args["dry_run"]) ?? true) == false,
+              data["execution_mode"] == "builtin_tool_runtime"
+        else {
+            return ToolResult(success: data["status"] != "failed", evidence: "Built background driver dispatch envelope.", data: data, error: data["status"] == "failed" ? "background_driver_failed" : nil)
+        }
+
+        let result = try executeBuiltinBackgroundDriver(driver: data["selected_driver"] ?? "", args: args)
+        data["status"] = result.success ? "executed" : "failed"
+        data["runtime_result"] = result.jsonString
+        data["runtime_evidence"] = result.evidence
+        data["runtime_error"] = result.error ?? ""
+        return ToolResult(
+            success: result.success,
+            evidence: result.success ? "Executed background driver through built-in runtime." : "Built-in background driver failed.",
+            data: data,
+            error: result.success ? nil : (result.error ?? "background_driver_failed"),
+            suggestion: result.suggestion
+        )
+    }
+
+    private func executeBuiltinBackgroundDriver(driver: String, args: [String: Any]) throws -> ToolResult {
+        let action = normalizeForSearch(string(args["action"]) ?? "observe")
+        switch driver {
+        case "browser_cdp":
+            return try executeBrowserBackgroundDriver(action: action, args: args)
+        case "ax_semantic":
+            return executeAXBackgroundDriver(action: action, args: args)
+        case "semantic_app_adapter":
+            return try executeAppSkillBackgroundDriver(action: action, args: args)
+        default:
+            return ToolResult(success: false, evidence: "No built-in runtime for background driver \(driver).", error: "unsupported_background_driver")
+        }
+    }
+
+    private func executeBrowserBackgroundDriver(action: String, args: [String: Any]) throws -> ToolResult {
+        var next = args
+        next["action"] = action
+        switch action {
+        case "observe":
+            return try browserCDPObserve(next)
+        case "click", "type", "submit", "read":
+            return try browserCDPAct(next)
+        case "extract":
+            return try browserCDPExtract(next)
+        case "verify", "wait":
+            if string(next["condition"]) == nil {
+                next["condition"] = string(args["selector"])?.isEmpty == false ? "selector" : "text"
+                next["value"] = string(args["selector"]) ?? string(args["query"]) ?? string(args["text"]) ?? ""
+            }
+            return try browserCDPWait(next)
+        case "eval", "script":
+            return try browserCDPEval(next)
+        default:
+            return ToolResult(success: false, evidence: "Unsupported CDP background action \(action).", error: "unsupported_background_action")
+        }
+    }
+
+    private func executeAXBackgroundDriver(action: String, args: [String: Any]) -> ToolResult {
+        switch action {
+        case "click":
+            return AIOSAutomationService.shared.backgroundClick(args: args)
+        case "type":
+            return AIOSAutomationService.shared.backgroundType(args: args)
+        case "read", "verify", "observe":
+            return AIOSAutomationService.shared.read(args: args)
+        case "wait":
+            return AIOSAutomationService.shared.wait(args: args)
+        default:
+            return ToolResult(success: false, evidence: "Unsupported AX background action \(action).", error: "unsupported_background_action")
+        }
+    }
+
+    private func executeAppSkillBackgroundDriver(action: String, args: [String: Any]) throws -> ToolResult {
+        let route = AppSkillRuntime.route(
+            query: string(args["query"]) ?? string(args["goal"]) ?? "",
+            appName: string(args["app_name"]) ?? "",
+            bundleID: string(args["bundle_id"]) ?? ""
+        )
+        let candidates = route.tools.filter { tool in
+            let normalized = normalizeForSearch(tool)
+            switch action {
+            case "observe", "read", "verify":
+                return normalized.contains("read") || normalized.contains("get") || normalized.contains("find") || normalized.contains("verify") || normalized.contains("list")
+            case "click", "open":
+                return normalized.contains("open") || normalized.contains("click") || normalized.contains("reveal")
+            case "type", "write", "create":
+                return normalized.contains("type") || normalized.contains("set") || normalized.contains("create") || normalized.contains("compose")
+            case "send":
+                return normalized.contains("send")
+            default:
+                return normalized.contains(action)
+            }
+        }
+        guard let tool = candidates.first ?? route.tools.first else {
+            return ToolResult(success: false, evidence: "No app skill tool is available for \(route.dictionary["app_name"] ?? "target app").", data: route.dictionary, error: "app_skill_route_empty")
+        }
+        guard tool != "background_driver_dispatch" else {
+            return ToolResult(success: false, evidence: "App skill route points back to background driver dispatch.", data: route.dictionary, error: "app_skill_recursive_route")
+        }
+        let result = execute(ToolCall(id: "background-driver", name: tool, arguments: args, raw: [:]))
+        var data = result.data
+        data["app_skill_route"] = jsonStringValue(route.dictionary)
+        data["selected_app_skill_tool"] = tool
+        return ToolResult(success: result.success, evidence: "Executed app skill adapter tool \(tool): \(result.evidence)", data: data, error: result.error, suggestion: result.suggestion)
     }
 
     private func visualGrounderProfilesTool() -> ToolResult {
@@ -4574,6 +4755,34 @@ final class ToolRegistry {
         ToolResult(success: true, evidence: "Built visual grounding session plan.", data: VisualGrounderRuntime.sessionPlan(args: args))
     }
 
+    private func visualGrounderRunTool(_ args: [String: Any]) throws -> ToolResult {
+        var data = try VisualGrounderRuntime.run(args: args)
+        if data["profile"] == "builtin_heuristic_grounder" {
+            var fallbackArgs = args
+            if let imagePath = string(args["image_path"]), !imagePath.isEmpty {
+                fallbackArgs["path"] = imagePath
+                fallbackArgs["scope"] = "image"
+            }
+            fallbackArgs["max_results"] = int(args["max_results"]) ?? 80
+            let fallback = try visualGround(fallbackArgs)
+            data["fallback_result"] = fallback.jsonString
+            data["candidates"] = fallback.data["candidates"] ?? "[]"
+            data["candidate_count"] = "\(candidateCount(from: fallback.data["candidates"] ?? "[]"))"
+            data["ui_map_path"] = fallback.data["ui_map_path"] ?? data["ui_map_path"] ?? ""
+            data["image_path"] = fallback.data["image_path"] ?? string(args["image_path"]) ?? ""
+            data["raw_output"] = fallback.evidence
+            return ToolResult(success: fallback.success, evidence: "Ran built-in visual grounder fallback.", data: data, error: fallback.error, suggestion: fallback.suggestion)
+        }
+        return ToolResult(success: true, evidence: "Ran visual grounder runtime.", data: data)
+    }
+
+    private func candidateCount(from candidatesJSON: String) -> Int {
+        guard let data = candidatesJSON.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return 0 }
+        return rows.count
+    }
+
     private func visualUIMapQueryTool(_ args: [String: Any]) -> ToolResult {
         ToolResult(success: true, evidence: "Queried cached visual UI maps.", data: VisualGrounderRuntime.queryUIMaps(query: string(args["query"]) ?? "", limit: int(args["limit"]) ?? 10))
     }
@@ -4581,6 +4790,11 @@ final class ToolRegistry {
     private func recipeLearnOnceTool(_ args: [String: Any]) throws -> ToolResult {
         guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
         return ToolResult(success: true, evidence: "Learned a stable recipe program from one run.", data: try RecipeLearningEngine.learnOnce(runID: runID, recipeID: string(args["recipe_id"]), title: string(args["title"]) ?? ""))
+    }
+
+    private func recipeLearnRecipeTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let recipeID = string(args["recipe_id"]), !recipeID.isEmpty else { throw RuntimeError("recipe_id is required") }
+        return ToolResult(success: true, evidence: "Learned a stable recipe program from an existing recipe.", data: try RecipeLearningEngine.learnRecipe(recipeID: recipeID, sourceRunID: string(args["source_run_id"]) ?? "", title: string(args["title"]) ?? ""))
     }
 
     private func recipeProgramSelectTool(_ args: [String: Any]) -> ToolResult {
@@ -4615,6 +4829,61 @@ final class ToolRegistry {
     private func browserAgentPlanTool(_ args: [String: Any]) -> ToolResult {
         let goal = string(args["goal"]) ?? ""
         return ToolResult(success: true, evidence: "Built browser agent plan.", data: BrowserAgentRuntime.agentPlan(goal: goal, url: string(args["url"]) ?? "", extractionSchema: string(args["extraction_schema"]) ?? ""))
+    }
+
+    private func browserAgentObserveTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.isEmpty else { throw RuntimeError("goal is required") }
+        let result = try browserCDPObserve(args)
+        let url = (try? selectedCDPTab(args).url) ?? result.data["url"] ?? ""
+        let record = try BrowserAgentRuntime.recordObservation(url: url, goal: goal, observationJSON: result.jsonString)
+        var data = result.data
+        data["browser_agent_record"] = jsonStringValue(record)
+        data["browser_agent_plan"] = jsonStringValue(BrowserAgentRuntime.agentPlan(goal: goal, url: url))
+        return ToolResult(success: result.success, evidence: "Browser agent observed page through CDP.", data: data, error: result.error, suggestion: result.suggestion)
+    }
+
+    private func browserAgentActTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.isEmpty else { throw RuntimeError("goal is required") }
+        _ = try? browserAgentObserveTool(args)
+        var actionResult = try browserCDPAct(args)
+        if !actionResult.success, !(string(args["query"]) ?? "").isEmpty {
+            _ = try? browserCDPObserve(args)
+            actionResult = try browserCDPAct(args)
+        }
+        let after = try? browserCDPObserve(args)
+        let url = (try? selectedCDPTab(args).url) ?? actionResult.data["url"] ?? after?.data["url"] ?? ""
+        let observationPayload = jsonStringValue([
+            "action": string(args["action"]) ?? "",
+            "query": string(args["query"]) ?? "",
+            "selector": string(args["selector"]) ?? "",
+            "result": actionResult.jsonString,
+            "after": after?.jsonString ?? ""
+        ])
+        let record = try BrowserAgentRuntime.recordObservation(url: url, goal: goal, observationJSON: observationPayload)
+        var data = actionResult.data
+        data["browser_agent_record"] = jsonStringValue(record)
+        data["post_observation"] = after?.jsonString ?? ""
+        return ToolResult(success: actionResult.success, evidence: "Browser agent executed \(string(args["action"]) ?? "action") through CDP.", data: data, error: actionResult.error, suggestion: actionResult.suggestion)
+    }
+
+    private func browserAgentExtractTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.isEmpty else { throw RuntimeError("goal is required") }
+        let result = try browserCDPExtract(args)
+        let url = (try? selectedCDPTab(args).url) ?? result.data["url"] ?? ""
+        let record = try BrowserAgentRuntime.recordObservation(url: url, goal: goal, observationJSON: result.jsonString)
+        var data = result.data
+        data["browser_agent_record"] = jsonStringValue(record)
+        return ToolResult(success: result.success, evidence: "Browser agent extracted structured page data.", data: data, error: result.error, suggestion: result.suggestion)
+    }
+
+    private func browserAgentWaitTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.isEmpty else { throw RuntimeError("goal is required") }
+        let result = try browserCDPWait(args)
+        let url = (try? selectedCDPTab(args).url) ?? result.data["url"] ?? ""
+        let record = try BrowserAgentRuntime.recordObservation(url: url, goal: goal, observationJSON: result.jsonString)
+        var data = result.data
+        data["browser_agent_record"] = jsonStringValue(record)
+        return ToolResult(success: result.success, evidence: "Browser agent waited for page condition.", data: data, error: result.error, suggestion: result.suggestion)
     }
 
     private func browserAgentObservationTool(_ args: [String: Any]) throws -> ToolResult {
@@ -4729,8 +4998,14 @@ final class ToolRegistry {
             includeAX: bool(args["include_ax"]) ?? true,
             synthesize: bool(args["synthesize"]) ?? true
         )
+        let shouldLearn = bool(args["learn_program"]) ?? (bool(args["synthesize"]) ?? true)
+        let learned = shouldLearn ? (try? RecipeLearningEngine.learnRecipe(recipeID: recipe.id, sourceRunID: "raw-events:\(recipe.id)", title: recipe.title)) : nil
         return ToolResult(success: true, evidence: "Recorded raw UI events into recipe.", data: [
             "recipe_id": recipe.id,
+            "program_recipe_id": learned?["program_recipe_id"] ?? "",
+            "stability_score": learned?["stability_score"] ?? "",
+            "ready_for_reuse": learned?["ready_for_reuse"] ?? "false",
+            "learning_record": learned?["record"] ?? "",
             "steps": "\(recipe.steps.count)",
             "notes": recipe.notes
         ])

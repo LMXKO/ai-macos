@@ -26,6 +26,14 @@ final class AgentLoop {
     func run(goal: String) async throws -> Bool {
         let config = LLMConfig.fromEnvironment()
         emitEvent("UserGoal", ["goal": goal])
+        if let harness = try? AgentHarnessStore.plan(goal: goal) {
+            emitEvent("AgentHarnessPlan", [
+                "harness_id": harness["id"] ?? "",
+                "route": harness["route"] ?? "",
+                "background_plan": harness["background_plan"] ?? ""
+            ])
+        }
+        captureShadow(goal: goal, trigger: "start")
 
         let checkpoint = eventStore?.loadCheckpoint()
         let resumed = checkpoint?.finished == false && checkpoint?.goal == goal
@@ -95,6 +103,13 @@ final class AgentLoop {
                 "step_title": currentStep.title,
                 "attempt": "\(currentStep.attempts)"
             ])
+            if let tick = try? AgentHarnessStore.tick(goal: goal, currentRole: "executor", evidence: "step \(currentStep.id): \(currentStep.title)") {
+                emitEvent("AgentHarnessTick", [
+                    "current_role": tick["current_role"] ?? "",
+                    "next_role": tick["next_role"] ?? "",
+                    "handoff": tick["handoff"] ?? ""
+                ])
+            }
 
             messages.append([
                 "role": "user",
@@ -298,6 +313,10 @@ final class AgentLoop {
                     "evidence": result.evidence,
                     "error": result.error ?? ""
                 ])
+                if let runID = eventStore?.runID,
+                   let evidence = try? TrajectoryEvidenceStore.capture(runID: runID, stepID: currentStep.id, call: call, result: result) {
+                    emitEvent("TrajectoryEvidence", evidence)
+                }
 
                 if !result.success {
                     plan.steps[stepIndex].status = .failed
@@ -349,6 +368,7 @@ final class AgentLoop {
                 "plan": plan.summaryForPrompt()
             ])
             recordEpisode(goal: goal, plan: plan, outcome: "paused")
+            captureShadow(goal: goal, trigger: "paused")
             print("\nPaused and scheduled for resume.")
             return false
         } else if finished {
@@ -358,6 +378,7 @@ final class AgentLoop {
             ])
             saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: true)
             rememberTaskOutcome(goal: goal, plan: plan)
+            captureShadow(goal: goal, trigger: "complete")
             eventStore?.clearCheckpoint()
             print("\nDone.")
             return true
@@ -368,6 +389,7 @@ final class AgentLoop {
                 "plan": plan.summaryForPrompt()
             ])
             recordEpisode(goal: goal, plan: plan, outcome: "incomplete")
+            captureShadow(goal: goal, trigger: "incomplete")
             saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
             print("\nStopped before all steps completed.")
             return false
@@ -709,6 +731,16 @@ final class AgentLoop {
         ])
     }
 
+    private func captureShadow(goal: String, trigger: String) {
+        guard let eventStore,
+              let capture = try? ShadowMemoryStore.capture(runID: eventStore.runID, goal: goal, trigger: trigger, limit: 20)
+        else { return }
+        emitEvent("ShadowMemoryCaptured", [
+            "shadow_id": capture["id"] ?? "",
+            "trigger": trigger
+        ])
+    }
+
     private func executionUserPrompt(goal: String, plan: TaskPlan) -> String {
         let suggestions = (try? RecipeStore.suggest(goal: goal, limit: 3)) ?? []
         let recipeHint: String
@@ -724,6 +756,7 @@ final class AgentLoop {
             .map { "- \($0.outcome) \($0.goal) tools=\($0.tools.prefix(5).joined(separator: ","))" }
             .joined(separator: "\n")
         let contextPack = MemoryIndexStore.contextPack(query: goal, limit: 5)
+        let shadowDigest = EpisodeContextEngine.shadowDigest(limit: 8)
         let strategyHint = ComputerUseStrategy.suggest(goal: goal)
         return """
         UserGoal:
@@ -743,6 +776,9 @@ final class AgentLoop {
 
         SemanticContextPack:
         \(jsonStringValue(contextPack))
+
+        ShadowMemoryDigest:
+        \(jsonStringValue(shadowDigest))
 
         ComputerUseStrategy:
         \(jsonStringValue(strategyHint))
@@ -842,9 +878,9 @@ final class AgentLoop {
     Prefer dedicated app adapters for Finder, Safari, Chrome, WPS, LibreOffice, Preview, Notes, Mail, Calendar, Reminders, WeChat, Lark, QQ, Tencent Meeting, Baidu Netdisk, ToDesk, Docker, Shortcuts, and IDEs when they match the task.
     Before manual multi-step work, use recipe_suggest or the provided RecipeSuggestions and execute a matching recipe with recipe_execute when the required params are available. If no recipe fits or params are missing, continue manually and gather enough detail to make the workflow learnable.
     Use MemoryContext, SemanticContextPack, memory_recall, memory_semantic_recall, and memory_context_pack for stable user/app/workflow facts and prior episodes that may help the current task. Use memory_remember only for reusable, non-sensitive preferences or automation hints; never store passwords, tokens, keys, payment data, or private secrets.
-    Use computer_use_strategy, memory_profile, app_skill_suggest, and background_capabilities when the route is unclear. For browser/web app tasks, prefer browser_cdp_observe, browser_cdp_act, browser_cdp_extract, browser_cdp_wait, and other CDP tools when an endpoint is available; they can control tabs without cursor/focus. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background_action or direct CDP/app scripting, background locator tools, foreground locator tools, visual grounding/visual_analyze, menu/keyboard actions, and raw coordinates last.
+    Use computer_use_strategy, memory_profile, app_skill_suggest, and background_capabilities when the route is unclear. For browser/web app tasks, prefer browser_agent_plan, browser_agent_observe, browser_agent_act, browser_agent_extract, browser_agent_wait, and CDP tools when an endpoint is available; they can control tabs without cursor/focus and keep selector/observation cache. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background_driver_dispatch/background_action or direct CDP/app scripting, background locator tools, foreground locator tools, visual_grounder_run/visual_ground/visual_analyze, menu/keyboard actions, and raw coordinates last.
     Before acting inside an app, call aios_automation_context or an app-specific observation tool to orient. Prefer aios_find, aios_inspect, aios_read, aios_background_click, aios_background_type, aios_click, aios_type, and aios_wait over coordinate tools. For long-running tasks, try the background tools first because they use AXPress/AXValue only and avoid stealing focus. Keep restore_focus=true unless the task explicitly needs the target app left focused.
-    For visual/canvas/icon-heavy interfaces, call visual_ground or visual_analyze before visual_click; treat OCR-only matches as one signal, not the whole perception layer.
+    For visual/canvas/icon-heavy interfaces, call visual_grounder_run, visual_ground, or visual_analyze before visual_click; treat OCR-only matches as one signal, not the whole perception layer.
     For work that must wait on time or external state, call runtime_pause with a resume time instead of busy-waiting through many steps.
 
     After every meaningful action, use returned evidence or observation tools to verify progress. Call step_complete only when a step is verified. Use step_failed or plan_update for recovery. Call task_complete only after all requested delivery is done and verified.

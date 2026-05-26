@@ -130,14 +130,60 @@ struct AppSkillPackageStore {
     }
 
     static func list() -> [AppSkillPackage] {
-        guard FileManager.default.fileExists(atPath: packagesURL.path),
-              let urls = try? FileManager.default.contentsOfDirectory(at: packagesURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        var seen = Set<String>()
+        var packages: [AppSkillPackage] = []
+        for package in packageRoots().flatMap({ loadPackages(from: $0) }) where !seen.contains(package.id) {
+            seen.insert(package.id)
+            packages.append(package)
+        }
+        return packages
+    }
+
+    private static func loadPackages(from root: URL) -> [AppSkillPackage] {
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        if root.pathExtension == "json" {
+            return decodePackage(at: root).map { [$0] } ?? []
+        }
+        let directManifest = root.appendingPathComponent("skill-package.json")
+        if FileManager.default.fileExists(atPath: directManifest.path) {
+            return decodePackage(at: directManifest).map { [$0] } ?? []
+        }
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         else { return [] }
         return urls.compactMap { url in
-            let manifest = url.appendingPathComponent("skill-package.json")
-            guard let data = try? Data(contentsOf: manifest) else { return nil }
-            return try? JSONDecoder().decode(AppSkillPackage.self, from: data)
+            let manifest = url.pathExtension == "json" ? url : url.appendingPathComponent("skill-package.json")
+            return decodePackage(at: manifest)
         }
+    }
+
+    private static func decodePackage(at manifest: URL) -> AppSkillPackage? {
+        guard let data = try? Data(contentsOf: manifest) else { return nil }
+        return try? JSONDecoder().decode(AppSkillPackage.self, from: data)
+    }
+
+    static func resolvedPackageURL(id: String) -> URL? {
+        let normalized = normalizeID(id)
+        for root in packageRoots() {
+            if root.pathExtension == "json",
+               let package = decodePackage(at: root),
+               package.id == normalized || package.id == id {
+                return root.deletingLastPathComponent()
+            }
+            let directManifest = root.appendingPathComponent("skill-package.json")
+            if let package = decodePackage(at: directManifest),
+               package.id == normalized || package.id == id {
+                return root
+            }
+            guard let urls = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { continue }
+            for url in urls {
+                let manifest = url.pathExtension == "json" ? url : url.appendingPathComponent("skill-package.json")
+                if let package = decodePackage(at: manifest),
+                   package.id == normalized || package.id == id {
+                    return url.pathExtension == "json" ? url.deletingLastPathComponent() : url
+                }
+            }
+        }
+        return nil
     }
 
     static func skills() -> [AppSkill] {
@@ -151,7 +197,7 @@ struct AppSkillPackageStore {
         if package.appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { issues.append("app_name is empty") }
         let missing = package.tools.filter { !knownTools.contains($0) }
         if !missing.isEmpty { issues.append("unknown tools: \(missing.joined(separator: ","))") }
-        let dir = packageURL(id: package.id)
+        let dir = resolvedPackageURL(id: package.id) ?? packageURL(id: package.id)
         if !FileManager.default.fileExists(atPath: dir.appendingPathComponent("selectors.json").path) {
             issues.append("selectors.json missing")
         }
@@ -159,5 +205,12 @@ struct AppSkillPackageStore {
             issues.append("recipes directory missing")
         }
         return issues
+    }
+
+    private static func packageRoots() -> [URL] {
+        let envRoots = (ProcessInfo.processInfo.environment["AIOS_APP_SKILL_PATHS"] ?? "")
+            .split(separator: ":")
+            .map { URL(fileURLWithPath: String($0).expandingTildeInPath, isDirectory: true) }
+        return [packagesURL] + envRoots
     }
 }

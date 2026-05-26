@@ -57,13 +57,19 @@ struct BackgroundDriverBridge {
             "driver": jsonStringValue(selected),
             "dispatch_plan": jsonStringValue(plan),
             "request": jsonStringValue(request),
-            "status": dryRun || !available ? "planned" : "executed",
+            "status": dryRun ? "planned" : "pending_execution",
             "dry_run": dryRun ? "true" : "false",
             "can_attempt_true_background": selected["guarantees"]?.contains("no_cursor") == true ? "true" : "false"
         ]
+        if ["browser_cdp", "semantic_app_adapter", "ax_semantic"].contains(selected["id"] ?? "") {
+            data["execution_mode"] = "builtin_tool_runtime"
+            return data
+        }
         guard !dryRun, available, FileManager.default.fileExists(atPath: binary) else {
             if !available {
                 data["reason"] = "Selected driver is not available locally; returning portable driver request envelope."
+            } else if !FileManager.default.fileExists(atPath: binary) {
+                data["reason"] = "Selected external driver binary is not present."
             }
             return data
         }

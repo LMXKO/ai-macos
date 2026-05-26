@@ -61,6 +61,38 @@ struct RecipeLearningEngine {
         ]
     }
 
+    static func learnRecipe(recipeID: String, sourceRunID: String = "", title: String = "") throws -> [String: String] {
+        let programID = recipeID.hasSuffix("-program") ? recipeID : "\(recipeID)-program"
+        let generalized = try RecipeGeneralizer.generalize(recipeID: recipeID, outputID: programID)
+        let compiled = try RecipeProgramStore.compile(recipeID: generalized.id)
+        let parameters = compiled["parameters"] ?? ""
+        let score = stabilityScore(compile: compiled, parameters: parameters)
+        let record = RecipeLearningRecord(
+            id: "learn-\(normalizeID(recipeID))-\(UUID().uuidString.prefix(8))",
+            runID: sourceRunID.isEmpty ? "recipe:\(recipeID)" : sourceRunID,
+            recipeID: recipeID,
+            programRecipeID: generalized.id,
+            parameters: parameters,
+            compile: jsonStringValue(compiled),
+            stabilityScore: score,
+            createdAt: isoDateString(Date())
+        )
+        try append(record)
+        if score >= 0.75 {
+            _ = try? RecipeStore.recordRunOutcome(recipeID: generalized.id, runID: record.runID, success: true, notes: "learn_recipe promoted stable program")
+        }
+        return [
+            "schema": "aios.recipe.learn_recipe.v1",
+            "record": jsonStringValue(record.dictionary),
+            "recipe_id": recipeID,
+            "program_recipe_id": generalized.id,
+            "stability_score": String(format: "%.2f", score),
+            "ready_for_reuse": score >= 0.75 ? "true" : "false",
+            "compile": jsonStringValue(compiled),
+            "title": title.isEmpty ? generalized.title : title
+        ]
+    }
+
     static func select(goal: String, limit: Int = 5) -> [String: String] {
         let suggestions = (try? RecipeStore.suggest(goal: goal, limit: limit)) ?? []
         let records = readAll()

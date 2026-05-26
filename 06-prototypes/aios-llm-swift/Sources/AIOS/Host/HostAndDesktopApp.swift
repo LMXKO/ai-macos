@@ -114,7 +114,7 @@ final class AIOSHost: NSObject, NSApplicationDelegate {
 
     private func drainQueueOnce() async {
         guard !running else { return }
-        _ = try? TaskGraphStore.tick()
+        _ = try? LongRunDaemonStore.tick()
         guard let item = try? TaskQueue.next() else { return }
         if let summary = try? EventStore.readSummary(runID: item.id), summary.status == "canceled" {
             try? TaskQueue.remove(item.url)
@@ -182,6 +182,7 @@ final class AIOSAppModel: ObservableObject {
     @Published var selectedRunID = ""
     @Published var selectedEvents = ""
     @Published var checkpointText = ""
+    @Published var dashboardText = ""
     @Published var trajectoryText = ""
     @Published var replayPlanText = ""
     @Published var strategyText = ""
@@ -193,6 +194,7 @@ final class AIOSAppModel: ObservableObject {
     @Published var baseURL = AIOSConfig.default.baseURL
     @Published var modelName = AIOSConfig.default.model
     @Published var maxSteps = "\(AIOSConfig.default.maxSteps)"
+    @Published var feedbackText = ""
     @Published var isRunning = false
     private var refreshTimer: Timer?
 
@@ -288,6 +290,7 @@ final class AIOSAppModel: ObservableObject {
         guard !selectedRunID.isEmpty else {
             selectedEvents = ""
             checkpointText = ""
+            dashboardText = ""
             trajectoryText = ""
             replayPlanText = ""
             strategyText = ""
@@ -299,6 +302,7 @@ final class AIOSAppModel: ObservableObject {
             .appendingPathComponent(selectedRunID, isDirectory: true)
             .appendingPathComponent("checkpoint.json")
         checkpointText = (try? String(contentsOf: checkpointURL, encoding: .utf8)) ?? "暂无 checkpoint"
+        dashboardText = jsonStringValue(CockpitDashboardStore.dashboard(runID: selectedRunID, limit: 20))
         strategyText = jsonStringValue(ComputerUseStrategy.suggest(goal: summary?.goal ?? selectedEvents))
         if let events = try? TrajectoryStore.summarize(runID: selectedRunID, limit: 120) {
             trajectoryText = jsonStringValue(events)
@@ -342,6 +346,20 @@ final class AIOSAppModel: ObservableObject {
             let summary = try EventStore.readSummary(runID: selectedRunID)
             try TaskQueue.submitExisting(runID: selectedRunID, goal: summary.goal)
             status = "Resume queued \(selectedRunID.prefix(8))"
+            refresh()
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    func cockpitCommand(_ command: String) {
+        guard !selectedRunID.isEmpty else { return }
+        do {
+            let item = try CockpitControlStore.record(runID: selectedRunID, command: command, feedback: feedbackText)
+            status = "\(command) \(item.status)"
+            if command == "feedback" || command == "replan" || command == "branch" {
+                feedbackText = ""
+            }
             refresh()
         } catch {
             status = error.localizedDescription
@@ -412,9 +430,17 @@ struct AIOSAppView: View {
                         Text("任务")
                             .font(.headline)
                         Spacer()
-                        Button("取消") { model.cancelSelected() }
-                        Button("恢复") { model.resumeSelected() }
+                        Button("暂停") { model.cockpitCommand("pause") }
+                        Button("继续") { model.resumeSelected() }
                         Button("重试") { model.retrySelected() }
+                        Button("停止") { model.cancelSelected() }
+                    }
+                    HStack(spacing: 6) {
+                        TextField("人工反馈 / 重规划说明", text: $model.feedbackText)
+                            .textFieldStyle(.roundedBorder)
+                        Button("反馈") { model.cockpitCommand("feedback") }
+                        Button("重规划") { model.cockpitCommand("replan") }
+                        Button("分支") { model.cockpitCommand("branch") }
                     }
                     List(model.runs, id: \.id, selection: $model.selectedRunID) { run in
                         VStack(alignment: .leading, spacing: 3) {
@@ -451,6 +477,16 @@ struct AIOSAppView: View {
                     }
                     DisclosureGroup("驾驶舱") {
                         VStack(alignment: .leading, spacing: 6) {
+                            Text("Dashboard")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.dashboardText.isEmpty ? "暂无 dashboard" : model.dashboardText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 110)
                             HStack {
                                 Text("Strategy")
                                     .font(.caption)

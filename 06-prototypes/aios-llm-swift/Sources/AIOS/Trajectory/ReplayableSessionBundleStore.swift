@@ -23,10 +23,11 @@ struct ReplayableSessionBundleStore {
         let replay = try? TrajectoryReplayEngine.replay(runID: runID, dryRun: true)
         let resumePoints = (try? TrajectoryProductStore.resumePoints(runID: runID)) ?? []
         let lanes = [
-            ["lane": "screen", "available": hasEvidence(trajectory, keys: ["screenshot_path", "image_path"]) ? "true" : "false", "description": "Screenshot/window/image refs for visual replay."],
-            ["lane": "ax_tree", "available": hasEvidence(trajectory, keys: ["ax_tree", "snapshot_id", "locator_id"]) ? "true" : "false", "description": "Accessibility tree or locator snapshot refs."],
-            ["lane": "dom", "available": hasEvidence(trajectory, keys: ["selector", "url", "tab_id"]) ? "true" : "false", "description": "Browser DOM/CDP refs."],
+            ["lane": "screen", "available": hasEvidence(trajectory, keys: ["screenshot", "screenshot_path", "screen_path", "image_path"]) ? "true" : "false", "description": "Screenshot/window/image refs for visual replay."],
+            ["lane": "ax_tree", "available": hasEvidence(trajectory, keys: ["ax_tree", "snapshot_id", "locator_id", "ax_available"]) ? "true" : "false", "description": "Accessibility tree or locator snapshot refs."],
+            ["lane": "dom", "available": hasEvidence(trajectory, keys: ["selector", "url", "tab_id", "dom_available"]) ? "true" : "false", "description": "Browser DOM/CDP refs."],
             ["lane": "action_result", "available": hasEvidence(trajectory, keys: ["tool", "success", "evidence"]) ? "true" : "false", "description": "Tool call result and evidence."],
+            ["lane": "evidence_manifest", "available": hasEvidence(trajectory, keys: ["evidence_manifest", "evidence_id"]) ? "true" : "false", "description": "Per-action evidence manifests with screen/AX/DOM/action lanes."],
             ["lane": "state_diff", "available": hasEvidence(trajectory, keys: ["status", "checkpoint", "updated_at"]) ? "true" : "false", "description": "Run status/checkpoint transitions."]
         ]
         return [

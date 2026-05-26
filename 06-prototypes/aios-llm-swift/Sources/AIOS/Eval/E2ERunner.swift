@@ -171,8 +171,10 @@ struct E2ERunner {
                     "background_driver_dispatch",
                     "visual_grounder_profiles",
                     "visual_grounder_session",
+                    "visual_grounder_run",
                     "visual_ui_map_query",
                     "recipe_learn_once",
+                    "recipe_learn_recipe",
                     "recipe_program_select",
                     "long_task_state",
                     "long_task_watch",
@@ -180,8 +182,13 @@ struct E2ERunner {
                     "memory_entity_graph",
                     "memory_preference_digest",
                     "browser_agent_plan",
+                    "browser_agent_observe",
+                    "browser_agent_act",
+                    "browser_agent_extract",
+                    "browser_agent_wait",
                     "browser_agent_observation",
                     "browser_agent_snapshot",
+                    "memory_shadow_capture",
                     "app_skill_sdk",
                     "app_skill_marketplace",
                     "cockpit_dashboard",
@@ -562,10 +569,12 @@ struct E2ERunner {
                 let handoff = tools.execute(ToolCall(id: "eval", name: "agent_handoff_packet", arguments: ["goal": store.goal, "from_role": "planner", "to_role": "browser_specialist", "reason": "web app step"], raw: [:]))
                 let browserSession = tools.execute(ToolCall(id: "eval", name: "browser_runtime_session", arguments: ["name": "eval-browser", "endpoint": "http://127.0.0.1:9222", "profile_dir": "/private/tmp/aios-eval-browser"], raw: [:]))
                 let browserPlan = tools.execute(ToolCall(id: "eval", name: "browser_runtime_plan", arguments: ["goal": "Click Submit in long web app", "url": "https://example.com/app"], raw: [:]))
+                let browserAgentPlan = tools.execute(ToolCall(id: "eval", name: "browser_agent_plan", arguments: ["goal": "Click Submit in long web app", "url": "https://example.com/app"], raw: [:]))
                 let skillRoute = tools.execute(ToolCall(id: "eval", name: "app_skill_route", arguments: ["query": "Chrome web CDP"], raw: [:]))
                 let skillExport = tools.execute(ToolCall(id: "eval", name: "app_skill_export_manifest", arguments: ["id": "browser-chrome"], raw: [:]))
                 let memory = tools.execute(ToolCall(id: "eval", name: "memory_episode_consolidate", arguments: ["run_id": store.runID, "outcome": "success"], raw: [:]))
                 let shadow = tools.execute(ToolCall(id: "eval", name: "memory_shadow_digest", arguments: ["limit": 5], raw: [:]))
+                let shadowCapture = tools.execute(ToolCall(id: "eval", name: "memory_shadow_capture", arguments: ["run_id": store.runID, "goal": store.goal, "trigger": "eval", "limit": 5], raw: [:]))
                 let cockpitCommand = tools.execute(ToolCall(id: "eval", name: "cockpit_command", arguments: ["run_id": store.runID, "command": "feedback", "feedback": "continue from the browser step"], raw: [:]))
                 let cockpit = tools.execute(ToolCall(id: "eval", name: "cockpit_live_state", arguments: ["limit": 5], raw: [:]))
                 let trajectoryProduct = tools.execute(ToolCall(id: "eval", name: "trajectory_product_export", arguments: ["run_id": store.runID], raw: [:]))
@@ -580,8 +589,8 @@ struct E2ERunner {
                 let daemon = tools.execute(ToolCall(id: "eval", name: "long_run_daemon_tick", arguments: [:], raw: [:]))
 
                 let results = [
-                    role, handoff, browserSession, browserPlan, skillRoute, skillExport,
-                    memory, shadow, cockpitCommand, cockpit, trajectoryProduct, resumePoints,
+                    role, handoff, browserSession, browserPlan, browserAgentPlan, skillRoute, skillExport,
+                    memory, shadow, shadowCapture, cockpitCommand, cockpit, trajectoryProduct, resumePoints,
                     branch, recipeProgram, recipeInfer, visualStrategy, visualCache, dispatch,
                     schedule, daemon
                 ]
@@ -618,11 +627,13 @@ struct E2ERunner {
                     ToolCall(id: "eval", name: "visual_grounder_session", arguments: ["surface": "canvas", "query": "play button", "image_path": "/private/tmp/eval.png"], raw: [:]),
                     ToolCall(id: "eval", name: "visual_ui_map_query", arguments: ["query": "button", "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "recipe_learn_once", arguments: ["run_id": store.runID, "recipe_id": "eval-parity-learned"], raw: [:]),
+                    ToolCall(id: "eval", name: "recipe_learn_recipe", arguments: ["recipe_id": "eval-parity-learned", "source_run_id": store.runID], raw: [:]),
                     ToolCall(id: "eval", name: "recipe_program_select", arguments: ["goal": "inspect Package.swift", "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_state", arguments: ["run_id": store.runID, "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_watch", arguments: ["goal": "continue after Package.swift appears", "condition": "file_exists", "value": "Package.swift", "title": "Parity watch"], raw: [:]),
                     ToolCall(id: "eval", name: "memory_entity_graph", arguments: ["query": "Package.swift", "limit": 10], raw: [:]),
                     ToolCall(id: "eval", name: "memory_preference_digest", arguments: ["query": "Package.swift", "limit": 10], raw: [:]),
+                    ToolCall(id: "eval", name: "memory_shadow_capture", arguments: ["run_id": store.runID, "goal": store.goal, "trigger": "parity", "limit": 10], raw: [:]),
                     ToolCall(id: "eval", name: "browser_agent_plan", arguments: ["goal": "Submit form in web app", "url": "https://example.com/app"], raw: [:]),
                     ToolCall(id: "eval", name: "browser_agent_observation", arguments: ["url": "https://example.com/app", "goal": "Submit form in web app", "observation_json": #"{"buttons":["Submit"]}"#], raw: [:]),
                     ToolCall(id: "eval", name: "browser_agent_snapshot", arguments: ["query": "Submit", "limit": 5], raw: [:]),

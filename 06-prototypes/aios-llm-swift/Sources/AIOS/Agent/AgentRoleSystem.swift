@@ -72,7 +72,7 @@ struct AgentRoleSystem {
             id: "perception_grounder",
             title: "Perception Grounder",
             mission: "Convert screenshots/windows/images into UI candidates, action points, and verification anchors.",
-            tools: ["visual_candidates", "visual_ground", "visual_ground_action", "visual_analyze", "screen_capture_window_sck"],
+            tools: ["visual_candidates", "visual_ground", "visual_grounder_run", "visual_ground_action", "visual_analyze", "screen_capture_window_sck"],
             inputs: ["image", "query", "target_surface"],
             outputs: ["grounding_candidates", "action_plan", "verification_anchors"],
             handoffs: ["executor", "verifier"]
@@ -81,7 +81,7 @@ struct AgentRoleSystem {
             id: "browser_specialist",
             title: "Browser Specialist",
             mission: "Operate long web-app sessions through CDP observe/act/extract/wait with selector cache and session snapshots.",
-            tools: ["browser_runtime_plan", "browser_runtime_snapshot", "browser_cdp_observe", "browser_cdp_act", "browser_cdp_extract", "browser_cdp_wait"],
+            tools: ["browser_agent_plan", "browser_agent_observe", "browser_agent_act", "browser_agent_extract", "browser_agent_wait", "browser_runtime_snapshot", "browser_cdp_observe", "browser_cdp_act", "browser_cdp_extract", "browser_cdp_wait"],
             inputs: ["url", "web_goal", "selector_cache"],
             outputs: ["web_action_result", "browser_session_snapshot", "selector_repair"],
             handoffs: ["verifier", "recipe_runner"]
@@ -99,7 +99,7 @@ struct AgentRoleSystem {
             id: "memory_curator",
             title: "Memory Curator",
             mission: "Create durable episodes, consolidate context graph facts, and build compact context packs for long tasks.",
-            tools: ["memory_episode_consolidate", "memory_context_pack", "memory_semantic_recall", "context_graph_ingest"],
+            tools: ["memory_episode_consolidate", "memory_context_pack", "memory_semantic_recall", "memory_shadow_capture", "context_graph_ingest"],
             inputs: ["run_events", "task_outcome", "user_feedback"],
             outputs: ["episode", "context_graph_edges", "memory_context_pack"],
             handoffs: ["planner", "recipe_runner"]
