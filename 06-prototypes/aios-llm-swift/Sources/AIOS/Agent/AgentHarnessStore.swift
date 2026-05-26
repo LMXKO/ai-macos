@@ -13,6 +13,8 @@ struct AgentHarnessStore {
         let browser = BrowserAgentRuntime.agentPlan(goal: goal, url: "")
         let visual = VisualGrounderRuntime.sessionPlan(args: ["surface": surface, "query": goal])
         let background = try BackgroundDriverBridge.dispatch(args: ["app_name": app, "surface": surface, "query": goal, "action": "observe", "dry_run": true])
+        let modelStack = ComputerUseModelStack.strategy(goal: goal, app: app)
+        let nativeKernel = NativeBackgroundDriverKernel.profile(args: ["app_name": app, "surface": surface, "query": goal, "action": "observe"])
         let payload: [String: String] = [
             "schema": "aios.agent.harness.plan.v1",
             "id": "harness-\(UUID().uuidString)",
@@ -26,8 +28,10 @@ struct AgentHarnessStore {
             "browser_plan": jsonStringValue(browser),
             "visual_plan": jsonStringValue(visual),
             "background_plan": jsonStringValue(background),
-            "budgets": "planner=1,executor_per_step=3,verifier=1,memory_curator=1",
-            "handoff_contract": "each role receives goal, context, tools, stop_conditions, evidence_required; verifier decides continue/repair/complete",
+            "native_kernel": jsonStringValue(nativeKernel),
+            "model_stack": jsonStringValue(modelStack),
+            "budgets": "planner=1,executor_per_step=3,verifier=1,memory_curator=1,runtime_operator=daemon_tick",
+            "handoff_contract": "each role receives goal, context, tools, stop_conditions, evidence_required; verifier decides continue/repair/complete; resident_agent_tick can advance roles across long waits",
             "created_at": isoDateString(Date())
         ]
         try append(payload)

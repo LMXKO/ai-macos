@@ -18,7 +18,10 @@ struct BrowserAgentRuntime {
             "act": "browser_cdp_act uses selector cache first, then text/role query, then JS fallback.",
             "extract": extractionSchema.isEmpty ? "browser_cdp_extract returns structured text/links/forms." : extractionSchema,
             "wait": "browser_cdp_wait watches DOM text, selector, navigation, and network-idle style conditions.",
-            "self_healing": "cache successful selectors by url+goal+action and retry changed pages through observe->act repair."
+            "self_healing": "cache successful selectors by url+goal+action and retry changed pages through observe->act repair.",
+            "session_policy": "bind to browser_runtime_session/profile_dir when available so auth and long web-app state survive daemon ticks.",
+            "schema_validation": extractionSchema.isEmpty ? "available through browser_agent_validate_extraction when a schema is supplied" : "validate required fields and preserve provenance after extract.",
+            "iframe_policy": "same-origin frames are queried through CDP JS; cross-origin frames require target attachment or extension-level adapter."
         ]
     }
 

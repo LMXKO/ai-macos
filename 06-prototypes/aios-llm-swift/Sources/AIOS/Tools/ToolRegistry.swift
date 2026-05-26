@@ -984,6 +984,99 @@ final class ToolRegistry {
                 "goal": schema("string", "Task goal."),
                 "app": schema("string", "Optional app context.")
             ], required: ["goal"]),
+            tool("computer_use_model_stack", "Plan the long-running computer-use model stack: planner, executor, visual grounder, recipe runner, verifier, memory curator.", [
+                "goal": schema("string", "Task goal."),
+                "app": schema("string", "Optional app context."),
+                "mode": schema("string", "fast, balanced, or deep. Default balanced.")
+            ], required: ["goal"]),
+            tool("long_agent_capability_matrix", "Return the 10-layer capability matrix for long-running automatic macOS computer use.", [
+                "goal": schema("string", "Optional goal to contextualize the matrix.")
+            ]),
+            tool("background_native_kernel", "Return the native/background control kernel profile for a target, including inactive/offscreen/non-AX adapter policy.", [
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "surface": schema("string", "Surface hint such as web, canvas, figma, blender, or native_non_ax."),
+                "url": schema("string", "Optional URL."),
+                "action": schema("string", "Action such as click, type, observe, verify, or drag."),
+                "query": schema("string", "Semantic target query."),
+                "selector": schema("string", "Optional DOM or adapter selector."),
+                "text": schema("string", "Optional text for type actions."),
+                "allow_foreground": schema("boolean", "Whether foreground coordinate fallback is allowed. Default false.")
+            ]),
+            tool("background_driver_probe", "Probe the ordered no-focus/no-cursor driver stages for a target and action.", [
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "surface": schema("string", "Surface hint."),
+                "url": schema("string", "Optional URL."),
+                "action": schema("string", "Action such as click, type, observe, verify, or drag."),
+                "query": schema("string", "Semantic target query."),
+                "selector": schema("string", "Optional DOM or adapter selector."),
+                "allow_foreground": schema("boolean", "Whether foreground coordinate fallback is allowed. Default false.")
+            ]),
+            tool("visual_grounder_model_registry", "Return the visual grounding model registry, calibration count, feedback count, and selection policy.", [:]),
+            tool("visual_grounder_calibrate", "Record screenshot-to-native coordinate calibration for visual grounding.", [
+                "image_path": schema("string", "Screenshot/image path."),
+                "surface": schema("string", "Optional surface hint."),
+                "observed_width": schema("number", "Image/capture width."),
+                "observed_height": schema("number", "Image/capture height."),
+                "native_width": schema("number", "Native target coordinate width."),
+                "native_height": schema("number", "Native target coordinate height."),
+                "notes": schema("string", "Optional calibration notes.")
+            ]),
+            tool("visual_grounder_feedback", "Record candidate success/failure feedback so grounding can rerank future UI maps.", [
+                "candidate_id": schema("string", "Candidate id."),
+                "query": schema("string", "Grounding query."),
+                "surface": schema("string", "Surface hint."),
+                "image_path": schema("string", "Optional image path."),
+                "success": schema("boolean", "Whether the candidate led to the expected result."),
+                "reason": schema("string", "Optional reason.")
+            ], required: ["candidate_id", "success"]),
+            tool("visual_grounder_policy", "Return the model/calibration/feedback policy for a visual grounding query.", [
+                "surface": schema("string", "Surface hint."),
+                "query": schema("string", "Grounding query.")
+            ]),
+            tool("recipe_stabilize_program", "Stabilize a recipe into a permanent workflow program with invariants, adaptation policy, and reuse score.", [
+                "id": schema("string", "Recipe id."),
+                "goal": schema("string", "Optional goal/context.")
+            ], required: ["id"]),
+            tool("resident_agent_plan", "Create a durable resident long-running agent session over task graph, memory context, and role route.", [
+                "goal": schema("string", "Long-running task goal."),
+                "app_name": schema("string", "Optional app name."),
+                "surface": schema("string", "Optional surface hint."),
+                "wake_after_seconds": schema("number", "Optional delay before first tick.")
+            ], required: ["goal"]),
+            tool("resident_agent_tick", "Advance one resident agent session tick and record a role handoff.", [
+                "session_id": schema("string", "Optional resident session id."),
+                "evidence": schema("string", "Optional tick evidence/reason.")
+            ]),
+            tool("resident_agent_status", "Return durable resident agent sessions and daemon state.", [
+                "limit": schema("number", "Maximum sessions. Default 20.")
+            ]),
+            tool("shadow_episode_policy", "Return the Shadow-style episode/context graph capture and injection policy for long tasks.", [
+                "goal": schema("string", "Optional goal/query."),
+                "limit": schema("number", "Maximum rows. Default 20.")
+            ]),
+            tool("browser_agent_contract", "Return Stagehand-grade browser observe/act/extract/wait/session/schema contract for a goal.", [
+                "goal": schema("string", "Web task goal."),
+                "url": schema("string", "Optional URL."),
+                "extraction_schema": schema("string", "Optional extraction schema description or JSON.")
+            ], required: ["goal"]),
+            tool("browser_agent_validate_extraction", "Validate a browser extraction payload against a simple JSON schema with required fields.", [
+                "payload_json": schema("string", "Extracted payload JSON."),
+                "schema_json": schema("string", "JSON schema with required or fields array.")
+            ], required: ["payload_json"]),
+            tool("app_skill_core_pack", "Return or install the core app-skill package pack for common macOS apps and canvas/native surfaces.", [
+                "install": schema("boolean", "Install package scaffolds into state app-skills/packages. Default false.")
+            ]),
+            tool("cockpit_replay_spec", "Return product cockpit/replay spec with live lanes, controls, replay bundle, resume and recipe clipping policy.", [
+                "run_id": schema("string", "Optional run id."),
+                "limit": schema("number", "Maximum rows. Default 80.")
+            ]),
+            tool("agent_harness_dispatch", "Materialize a Codex-style multi-role harness dispatch with handoff packets for each role.", [
+                "goal": schema("string", "Task goal."),
+                "app_name": schema("string", "Optional app name."),
+                "surface": schema("string", "Optional surface hint.")
+            ], required: ["goal"]),
             tool("recipe_list", "List reusable AIOS workflow recipes.", [:]),
             tool("recipe_suggest", "Suggest reusable recipes that may match the user's goal before doing manual app automation.", [
                 "goal": schema("string", "User goal to match against recipe titles, templates, notes, and known workflow keywords."),
@@ -1582,6 +1675,42 @@ final class ToolRegistry {
                 return try agentHarnessTickTool(call.arguments)
             case "computer_use_strategy":
                 return computerUseStrategyTool(call.arguments)
+            case "computer_use_model_stack":
+                return computerUseModelStackTool(call.arguments)
+            case "long_agent_capability_matrix":
+                return longAgentCapabilityMatrixTool(call.arguments)
+            case "background_native_kernel":
+                return backgroundNativeKernelTool(call.arguments)
+            case "background_driver_probe":
+                return backgroundDriverProbeTool(call.arguments)
+            case "visual_grounder_model_registry":
+                return visualGrounderModelRegistryTool()
+            case "visual_grounder_calibrate":
+                return try visualGrounderCalibrateTool(call.arguments)
+            case "visual_grounder_feedback":
+                return try visualGrounderFeedbackTool(call.arguments)
+            case "visual_grounder_policy":
+                return visualGrounderPolicyTool(call.arguments)
+            case "recipe_stabilize_program":
+                return try recipeStabilizeProgramTool(call.arguments)
+            case "resident_agent_plan":
+                return try residentAgentPlanTool(call.arguments)
+            case "resident_agent_tick":
+                return try residentAgentTickTool(call.arguments)
+            case "resident_agent_status":
+                return residentAgentStatusTool(call.arguments)
+            case "shadow_episode_policy":
+                return shadowEpisodePolicyTool(call.arguments)
+            case "browser_agent_contract":
+                return browserAgentContractTool(call.arguments)
+            case "browser_agent_validate_extraction":
+                return browserAgentValidateExtractionTool(call.arguments)
+            case "app_skill_core_pack":
+                return try appSkillCorePackTool(call.arguments)
+            case "cockpit_replay_spec":
+                return cockpitReplaySpecTool(call.arguments)
+            case "agent_harness_dispatch":
+                return try agentHarnessDispatchTool(call.arguments)
             case "recipe_list":
                 return try recipeListTool()
             case "recipe_suggest":
@@ -4939,6 +5068,145 @@ final class ToolRegistry {
         let goal = string(args["goal"]) ?? ""
         let app = string(args["app"]) ?? ""
         return ToolResult(success: true, evidence: "Selected computer-use strategy.", data: ComputerUseStrategy.suggest(goal: goal, app: app))
+    }
+
+    private func computerUseModelStackTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Built long-running computer-use model stack.",
+            data: ComputerUseModelStack.strategy(
+                goal: string(args["goal"]) ?? "",
+                app: string(args["app"]) ?? string(args["app_name"]) ?? "",
+                mode: string(args["mode"]) ?? "balanced"
+            )
+        )
+    }
+
+    private func longAgentCapabilityMatrixTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Loaded 10-layer long-agent capability matrix.",
+            data: LongAgentCapabilityKernel.matrix(goal: string(args["goal"]) ?? "")
+        )
+    }
+
+    private func backgroundNativeKernelTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Built native background driver kernel profile.", data: NativeBackgroundDriverKernel.profile(args: args))
+    }
+
+    private func backgroundDriverProbeTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Probed background driver stages.", data: NativeBackgroundDriverKernel.probe(args: args))
+    }
+
+    private func visualGrounderModelRegistryTool() -> ToolResult {
+        ToolResult(success: true, evidence: "Loaded visual grounder model registry.", data: VisualGroundingQualityStore.modelRegistry())
+    }
+
+    private func visualGrounderCalibrateTool(_ args: [String: Any]) throws -> ToolResult {
+        ToolResult(success: true, evidence: "Recorded visual grounding calibration.", data: try VisualGroundingQualityStore.calibrate(args: args))
+    }
+
+    private func visualGrounderFeedbackTool(_ args: [String: Any]) throws -> ToolResult {
+        ToolResult(success: true, evidence: "Recorded visual grounding feedback.", data: try VisualGroundingQualityStore.feedback(args: args))
+    }
+
+    private func visualGrounderPolicyTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Built visual grounding model/calibration/feedback policy.",
+            data: VisualGroundingQualityStore.policy(surface: string(args["surface"]) ?? "", query: string(args["query"]) ?? "")
+        )
+    }
+
+    private func recipeStabilizeProgramTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let id = string(args["id"]), !id.isEmpty else { throw RuntimeError("id is required") }
+        return ToolResult(success: true, evidence: "Stabilized recipe workflow program.", data: try RecipeStabilityStore.stabilize(recipeID: id, goal: string(args["goal"]) ?? ""))
+    }
+
+    private func residentAgentPlanTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw RuntimeError("goal is required") }
+        return ToolResult(
+            success: true,
+            evidence: "Created resident long-running agent session.",
+            data: try ResidentAgentStore.plan(
+                goal: goal,
+                app: string(args["app_name"]) ?? string(args["app"]) ?? "",
+                surface: string(args["surface"]) ?? "",
+                wakeAfterSeconds: int(args["wake_after_seconds"]) ?? 0
+            )
+        )
+    }
+
+    private func residentAgentTickTool(_ args: [String: Any]) throws -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Advanced resident agent tick.",
+            data: try ResidentAgentStore.tick(sessionID: string(args["session_id"]), evidence: string(args["evidence"]) ?? "")
+        )
+    }
+
+    private func residentAgentStatusTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Loaded resident agent status.", data: ResidentAgentStore.status(limit: int(args["limit"]) ?? 20))
+    }
+
+    private func shadowEpisodePolicyTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Built Shadow-style episode/context capture policy.",
+            data: ShadowEpisodePolicyStore.policy(goal: string(args["goal"]) ?? "", limit: int(args["limit"]) ?? 20)
+        )
+    }
+
+    private func browserAgentContractTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Built Stagehand-grade browser agent contract.",
+            data: BrowserAgentContractStore.contract(
+                goal: string(args["goal"]) ?? "",
+                url: string(args["url"]) ?? "",
+                extractionSchema: string(args["extraction_schema"]) ?? ""
+            )
+        )
+    }
+
+    private func browserAgentValidateExtractionTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Validated browser extraction payload.",
+            data: BrowserAgentContractStore.validateExtraction(
+                payloadJSON: string(args["payload_json"]) ?? "",
+                schemaJSON: string(args["schema_json"]) ?? ""
+            )
+        )
+    }
+
+    private func appSkillCorePackTool(_ args: [String: Any]) throws -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: bool(args["install"]) == true ? "Installed core app-skill package pack." : "Loaded core app-skill package pack.",
+            data: try AppSkillCorePackStore.corePack(install: bool(args["install"]) ?? false)
+        )
+    }
+
+    private func cockpitReplaySpecTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Built cockpit replay product spec.",
+            data: CockpitReplaySpecStore.spec(runID: string(args["run_id"]), limit: int(args["limit"]) ?? 80)
+        )
+    }
+
+    private func agentHarnessDispatchTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw RuntimeError("goal is required") }
+        return ToolResult(
+            success: true,
+            evidence: "Dispatched multi-role agent harness.",
+            data: try AgentHarnessDispatchStore.dispatch(
+                goal: goal,
+                app: string(args["app_name"]) ?? string(args["app"]) ?? "",
+                surface: string(args["surface"]) ?? ""
+            )
+        )
     }
 
     private func recipeListTool() throws -> ToolResult {

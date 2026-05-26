@@ -56,6 +56,7 @@ The active Swift prototype in `06-prototypes/aios-llm-swift` now implements the 
 - Stagehand-style browser observe/act/extract/wait tools on top of Chrome CDP
 - memory profile, episode recall, and context graph ingestion/query
 - cockpit/replay session export for inspecting, resuming, and turning trajectories into reusable workflows
+- long-agent parity kernels: native background driver probe, visual model registry/calibration/feedback, resident agent sessions, Shadow-style episode policy, core app-skill pack, Codex-style harness dispatch, and computer-use model stack
 
 The key boundary is that the AI operates through Apple-approved control surfaces. It should not assume it can bypass TCC, Secure Input, sandboxing, DRM, banking/payment protections, or per-app Automation prompts.
 

@@ -3,7 +3,8 @@ import Foundation
 struct VisualGrounderRuntime {
     static func profiles() -> [[String: String]] {
         let env = ProcessInfo.processInfo.environment
-        return [
+        let quality = VisualGroundingQualityStore.modelRegistry()
+        var profiles = [
             [
                 "id": "openai_compatible_sidecar",
                 "title": "OpenAI-compatible VLM sidecar",
@@ -32,6 +33,16 @@ struct VisualGrounderRuntime {
                 "contract": "always available fallback, lower semantic depth than a VLM"
             ]
         ]
+        profiles.append([
+            "id": "quality_loop",
+            "title": "Calibration and feedback quality loop",
+            "available": "true",
+            "model": "candidate_feedback+coordinate_calibration",
+            "endpoint": "in-process",
+            "best_for": "long-running tasks that revisit the same app/UI surface",
+            "contract": quality["selection_policy"] ?? "feedback rerank and calibration"
+        ])
+        return profiles
     }
 
     static func sessionPlan(args: [String: Any]) -> [String: String] {
@@ -39,6 +50,7 @@ struct VisualGrounderRuntime {
         let query = string(args["query"]) ?? ""
         let imagePath = string(args["image_path"]) ?? ""
         let strategy = VisualPerceptionEngine.strategy(surface: surface, query: query)
+        let policy = VisualGroundingQualityStore.policy(surface: surface, query: query)
         let primary = profiles().first { $0["available"] == "true" } ?? profiles().last ?? [:]
         return [
             "schema": "aios.visual.grounder.session.v1",
@@ -46,6 +58,7 @@ struct VisualGrounderRuntime {
             "surface": surface,
             "image_path": imagePath,
             "strategy": jsonStringValue(strategy),
+            "quality_policy": jsonStringValue(policy),
             "selected_profile": jsonStringValue(primary),
             "candidate_schema": jsonStringValue(VisualGrounding.schema),
             "action_schema": jsonStringValue(VisualGrounding.actionSchema),

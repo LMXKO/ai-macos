@@ -570,29 +570,39 @@ struct E2ERunner {
                 let browserSession = tools.execute(ToolCall(id: "eval", name: "browser_runtime_session", arguments: ["name": "eval-browser", "endpoint": "http://127.0.0.1:9222", "profile_dir": "/private/tmp/aios-eval-browser"], raw: [:]))
                 let browserPlan = tools.execute(ToolCall(id: "eval", name: "browser_runtime_plan", arguments: ["goal": "Click Submit in long web app", "url": "https://example.com/app"], raw: [:]))
                 let browserAgentPlan = tools.execute(ToolCall(id: "eval", name: "browser_agent_plan", arguments: ["goal": "Click Submit in long web app", "url": "https://example.com/app"], raw: [:]))
+                let browserContract = tools.execute(ToolCall(id: "eval", name: "browser_agent_contract", arguments: ["goal": "Click Submit in long web app", "url": "https://example.com/app", "extraction_schema": #"{"required":["title"]}"#], raw: [:]))
                 let skillRoute = tools.execute(ToolCall(id: "eval", name: "app_skill_route", arguments: ["query": "Chrome web CDP"], raw: [:]))
+                let skillCore = tools.execute(ToolCall(id: "eval", name: "app_skill_core_pack", arguments: ["install": false], raw: [:]))
                 let skillExport = tools.execute(ToolCall(id: "eval", name: "app_skill_export_manifest", arguments: ["id": "browser-chrome"], raw: [:]))
                 let memory = tools.execute(ToolCall(id: "eval", name: "memory_episode_consolidate", arguments: ["run_id": store.runID, "outcome": "success"], raw: [:]))
                 let shadow = tools.execute(ToolCall(id: "eval", name: "memory_shadow_digest", arguments: ["limit": 5], raw: [:]))
+                let shadowPolicy = tools.execute(ToolCall(id: "eval", name: "shadow_episode_policy", arguments: ["goal": store.goal, "limit": 5], raw: [:]))
                 let shadowCapture = tools.execute(ToolCall(id: "eval", name: "memory_shadow_capture", arguments: ["run_id": store.runID, "goal": store.goal, "trigger": "eval", "limit": 5], raw: [:]))
                 let cockpitCommand = tools.execute(ToolCall(id: "eval", name: "cockpit_command", arguments: ["run_id": store.runID, "command": "feedback", "feedback": "continue from the browser step"], raw: [:]))
                 let cockpit = tools.execute(ToolCall(id: "eval", name: "cockpit_live_state", arguments: ["limit": 5], raw: [:]))
+                let cockpitReplay = tools.execute(ToolCall(id: "eval", name: "cockpit_replay_spec", arguments: ["run_id": store.runID, "limit": 20], raw: [:]))
                 let trajectoryProduct = tools.execute(ToolCall(id: "eval", name: "trajectory_product_export", arguments: ["run_id": store.runID], raw: [:]))
                 let resumePoints = tools.execute(ToolCall(id: "eval", name: "trajectory_resume_points", arguments: ["run_id": store.runID], raw: [:]))
                 let branch = tools.execute(ToolCall(id: "eval", name: "trajectory_branch_create", arguments: ["run_id": store.runID, "from_index": 2, "goal": "continue branch"], raw: [:]))
                 let recipeProgram = tools.execute(ToolCall(id: "eval", name: "recipe_program_compile", arguments: ["id": "create-calendar-event"], raw: [:]))
+                let recipeStable = tools.execute(ToolCall(id: "eval", name: "recipe_stabilize_program", arguments: ["id": "create-calendar-event", "goal": store.goal], raw: [:]))
                 let recipeInfer = tools.execute(ToolCall(id: "eval", name: "recipe_schema_infer", arguments: ["run_id": store.runID, "recipe_id": "eval-long-platform-recipe"], raw: [:]))
+                let modelStack = tools.execute(ToolCall(id: "eval", name: "computer_use_model_stack", arguments: ["goal": store.goal, "app": "Chrome"], raw: [:]))
                 let visualStrategy = tools.execute(ToolCall(id: "eval", name: "visual_perception_strategy", arguments: ["surface": "canvas", "query": "icon button"], raw: [:]))
+                let visualRegistry = tools.execute(ToolCall(id: "eval", name: "visual_grounder_model_registry", arguments: [:], raw: [:]))
                 let visualCache = tools.execute(ToolCall(id: "eval", name: "visual_ui_map_cache", arguments: ["image_path": "/private/tmp/eval.png", "query": "button", "candidates_json": "[]"], raw: [:]))
                 let dispatch = tools.execute(ToolCall(id: "eval", name: "background_dispatch_plan", arguments: ["action": "click", "app_name": "Figma", "surface": "canvas", "query": "play"], raw: [:]))
+                let nativeKernel = tools.execute(ToolCall(id: "eval", name: "background_native_kernel", arguments: ["action": "click", "app_name": "Figma", "surface": "canvas", "query": "play"], raw: [:]))
+                let residentPlan = tools.execute(ToolCall(id: "eval", name: "resident_agent_plan", arguments: ["goal": store.goal, "app_name": "Chrome", "surface": "web"], raw: [:]))
+                let residentTick = tools.execute(ToolCall(id: "eval", name: "resident_agent_tick", arguments: ["evidence": "eval tick"], raw: [:]))
                 let schedule = tools.execute(ToolCall(id: "eval", name: "long_run_schedule", arguments: ["goal": "scheduled eval", "after_seconds": 0], raw: [:]))
                 let daemon = tools.execute(ToolCall(id: "eval", name: "long_run_daemon_tick", arguments: [:], raw: [:]))
 
                 let results = [
-                    role, handoff, browserSession, browserPlan, browserAgentPlan, skillRoute, skillExport,
-                    memory, shadow, shadowCapture, cockpitCommand, cockpit, trajectoryProduct, resumePoints,
-                    branch, recipeProgram, recipeInfer, visualStrategy, visualCache, dispatch,
-                    schedule, daemon
+                    role, handoff, browserSession, browserPlan, browserAgentPlan, browserContract, skillRoute, skillCore, skillExport,
+                    memory, shadow, shadowPolicy, shadowCapture, cockpitCommand, cockpit, cockpitReplay, trajectoryProduct, resumePoints,
+                    branch, recipeProgram, recipeStable, recipeInfer, modelStack, visualStrategy, visualRegistry, visualCache, dispatch,
+                    nativeKernel, residentPlan, residentTick, schedule, daemon
                 ]
                 let inferredRecipeValid = (recipeInfer.data["compile"] ?? "").contains(#""valid":"true""#)
                 let ok = results.allSatisfy(\.success) &&
@@ -600,6 +610,8 @@ struct E2ERunner {
                     (dispatch.data["can_dispatch_without_focus"] ?? "") == "true" &&
                     (resumePoints.data["resume_points"] ?? "").contains("finder_file_info") &&
                     (cockpitCommand.data["status"] ?? "") == "applied" &&
+                    (nativeKernel.data["kernel_contract"] ?? "").contains("no-cursor") &&
+                    (residentTick.data["status"] ?? "") == "advanced" &&
                     inferredRecipeValid
                 let failed = results.filter { !$0.success }.map { $0.error ?? $0.evidence }.joined(separator: " | ")
                 return ToolResult(success: ok, evidence: ok ? "All 10 long-agent platform kernels are callable and integrated." : "Long-agent platform integration failed: \(failed)", data: [
@@ -608,6 +620,7 @@ struct E2ERunner {
                     "role": role.data["route"] ?? "",
                     "dispatch": jsonStringValue(dispatch.data),
                     "cockpit_command_status": cockpitCommand.data["status"] ?? "",
+                    "resident_tick_status": residentTick.data["status"] ?? "",
                     "inferred_recipe_valid": inferredRecipeValid ? "true" : "false",
                     "inferred_recipe_compile": recipeInfer.data["compile"] ?? ""
                 ], error: ok ? nil : "long_agent_platform_incomplete")
@@ -622,36 +635,55 @@ struct E2ERunner {
 
                 let calls: [ToolCall] = [
                     ToolCall(id: "eval", name: "background_driver_matrix", arguments: [:], raw: [:]),
+                    ToolCall(id: "eval", name: "background_native_kernel", arguments: ["app_name": "Figma", "surface": "canvas", "action": "click", "query": "play"], raw: [:]),
+                    ToolCall(id: "eval", name: "background_driver_probe", arguments: ["app_name": "Figma", "surface": "canvas", "action": "click", "query": "play"], raw: [:]),
                     ToolCall(id: "eval", name: "background_driver_dispatch", arguments: ["app_name": "Figma", "surface": "canvas", "action": "click", "query": "play", "dry_run": true], raw: [:]),
                     ToolCall(id: "eval", name: "visual_grounder_profiles", arguments: [:], raw: [:]),
+                    ToolCall(id: "eval", name: "visual_grounder_model_registry", arguments: [:], raw: [:]),
+                    ToolCall(id: "eval", name: "visual_grounder_policy", arguments: ["surface": "canvas", "query": "play button"], raw: [:]),
+                    ToolCall(id: "eval", name: "visual_grounder_feedback", arguments: ["candidate_id": "eval-candidate", "query": "play button", "surface": "canvas", "success": true, "reason": "eval"], raw: [:]),
                     ToolCall(id: "eval", name: "visual_grounder_session", arguments: ["surface": "canvas", "query": "play button", "image_path": "/private/tmp/eval.png"], raw: [:]),
                     ToolCall(id: "eval", name: "visual_ui_map_query", arguments: ["query": "button", "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "recipe_learn_once", arguments: ["run_id": store.runID, "recipe_id": "eval-parity-learned"], raw: [:]),
                     ToolCall(id: "eval", name: "recipe_learn_recipe", arguments: ["recipe_id": "eval-parity-learned", "source_run_id": store.runID], raw: [:]),
+                    ToolCall(id: "eval", name: "recipe_stabilize_program", arguments: ["id": "eval-parity-learned-program", "goal": store.goal], raw: [:]),
                     ToolCall(id: "eval", name: "recipe_program_select", arguments: ["goal": "inspect Package.swift", "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_state", arguments: ["run_id": store.runID, "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_watch", arguments: ["goal": "continue after Package.swift appears", "condition": "file_exists", "value": "Package.swift", "title": "Parity watch"], raw: [:]),
+                    ToolCall(id: "eval", name: "resident_agent_plan", arguments: ["goal": store.goal, "app_name": "Finder", "surface": "native"], raw: [:]),
+                    ToolCall(id: "eval", name: "resident_agent_tick", arguments: ["evidence": "parity eval"], raw: [:]),
                     ToolCall(id: "eval", name: "memory_entity_graph", arguments: ["query": "Package.swift", "limit": 10], raw: [:]),
                     ToolCall(id: "eval", name: "memory_preference_digest", arguments: ["query": "Package.swift", "limit": 10], raw: [:]),
+                    ToolCall(id: "eval", name: "shadow_episode_policy", arguments: ["goal": store.goal, "limit": 10], raw: [:]),
                     ToolCall(id: "eval", name: "memory_shadow_capture", arguments: ["run_id": store.runID, "goal": store.goal, "trigger": "parity", "limit": 10], raw: [:]),
+                    ToolCall(id: "eval", name: "browser_agent_contract", arguments: ["goal": "Submit form in web app", "url": "https://example.com/app", "extraction_schema": #"{"required":["buttons"]}"#], raw: [:]),
+                    ToolCall(id: "eval", name: "browser_agent_validate_extraction", arguments: ["payload_json": #"{"buttons":["Submit"]}"#, "schema_json": #"{"required":["buttons"]}"#], raw: [:]),
                     ToolCall(id: "eval", name: "browser_agent_plan", arguments: ["goal": "Submit form in web app", "url": "https://example.com/app"], raw: [:]),
                     ToolCall(id: "eval", name: "browser_agent_observation", arguments: ["url": "https://example.com/app", "goal": "Submit form in web app", "observation_json": #"{"buttons":["Submit"]}"#], raw: [:]),
                     ToolCall(id: "eval", name: "browser_agent_snapshot", arguments: ["query": "Submit", "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "app_skill_sdk", arguments: [:], raw: [:]),
+                    ToolCall(id: "eval", name: "app_skill_core_pack", arguments: ["install": false], raw: [:]),
                     ToolCall(id: "eval", name: "app_skill_marketplace", arguments: ["query": "Chrome", "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "cockpit_dashboard", arguments: ["run_id": store.runID, "limit": 5], raw: [:]),
+                    ToolCall(id: "eval", name: "cockpit_replay_spec", arguments: ["run_id": store.runID, "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "cockpit_dashboard_export", arguments: ["run_id": store.runID, "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "trajectory_bundle_manifest", arguments: ["run_id": store.runID, "limit": 80], raw: [:]),
                     ToolCall(id: "eval", name: "trajectory_bundle_export", arguments: ["run_id": store.runID, "limit": 80], raw: [:]),
                     ToolCall(id: "eval", name: "agent_harness_plan", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "app_name": "Chrome", "surface": "canvas"], raw: [:]),
+                    ToolCall(id: "eval", name: "agent_harness_dispatch", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "app_name": "Chrome", "surface": "canvas"], raw: [:]),
                     ToolCall(id: "eval", name: "agent_harness_tick", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "current_role": "planner", "evidence": "parity eval"], raw: [:]),
+                    ToolCall(id: "eval", name: "computer_use_model_stack", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "app": "Chrome"], raw: [:]),
+                    ToolCall(id: "eval", name: "long_agent_capability_matrix", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务"], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_interrupt", arguments: ["run_id": store.runID, "instruction": "continue with learned recipe", "mode": "replan"], raw: [:])
                 ]
                 let results = calls.map { tools.execute($0) }
                 let ok = results.allSatisfy(\.success) &&
                     (results.first { $0.data["schema"] == "aios.background.driver.dispatch.v1" }?.data["request"] ?? "").contains("must_not_move_cursor") &&
+                    (results.first { $0.data["schema"] == "aios.background.native_kernel.v1" }?.data["kernel_contract"] ?? "").contains("no-cursor") &&
                     (results.first { $0.data["schema"] == "aios.recipe.learn_once.v1" }?.data["ready_for_reuse"] ?? "") == "true" &&
-                    (results.first { $0.data["schema"] == "aios.agent.harness.plan.v1" }?.data["route"] ?? "").contains("planner")
+                    (results.first { $0.data["schema"] == "aios.recipe.stability.v1" }?.data["ready_for_permanent_reuse"] ?? "") == "true" &&
+                    (results.first { $0.data["schema"] == "aios.agent.harness.plan.v1" }?.data["route"] ?? "").contains("planner") &&
+                    (results.first { $0.data["schema"] == "aios.long_agent.capability_matrix.v1" }?.data["complete_count"] ?? "") == "10"
                 let failed = zip(calls, results).filter { !$0.1.success }.map { "\($0.0.name):\($0.1.error ?? $0.1.evidence)" }.joined(separator: " | ")
                 return ToolResult(success: ok, evidence: ok ? "All open-source parity kernels are integrated." : "Parity kernel integration failed: \(failed)", data: [
                     "run_id": store.runID,

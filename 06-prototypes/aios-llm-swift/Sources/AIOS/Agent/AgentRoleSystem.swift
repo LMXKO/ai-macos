@@ -54,7 +54,7 @@ struct AgentRoleSystem {
             id: "planner",
             title: "Planner",
             mission: "Decompose the user goal into durable phases, pick recipes/skills first, and choose explicit stop conditions.",
-            tools: ["computer_use_strategy", "recipe_suggest", "app_skill_suggest", "memory_context_pack", "task_graph_create"],
+            tools: ["computer_use_strategy", "computer_use_model_stack", "long_agent_capability_matrix", "recipe_suggest", "app_skill_suggest", "memory_context_pack", "task_graph_create"],
             inputs: ["goal", "memory_context", "available_skills"],
             outputs: ["task_plan", "role_route", "task_graph"],
             handoffs: ["recipe_runner", "browser_specialist", "app_skill_specialist", "executor", "runtime_operator"]
@@ -63,7 +63,7 @@ struct AgentRoleSystem {
             id: "executor",
             title: "Executor",
             mission: "Execute one bounded step through the deepest non-invasive channel and return structured evidence.",
-            tools: ["background_action", "background_kernel_plan", "aios_find", "aios_read", "visual_ground_action"],
+            tools: ["background_native_kernel", "background_driver_probe", "background_driver_dispatch", "background_action", "background_kernel_plan", "aios_find", "aios_read", "visual_ground_action"],
             inputs: ["step", "target", "constraints"],
             outputs: ["tool_result", "evidence", "recovery_hint"],
             handoffs: ["perception_grounder", "verifier", "runtime_operator"]
@@ -72,7 +72,7 @@ struct AgentRoleSystem {
             id: "perception_grounder",
             title: "Perception Grounder",
             mission: "Convert screenshots/windows/images into UI candidates, action points, and verification anchors.",
-            tools: ["visual_candidates", "visual_ground", "visual_grounder_run", "visual_ground_action", "visual_analyze", "screen_capture_window_sck"],
+            tools: ["visual_grounder_model_registry", "visual_grounder_policy", "visual_grounder_calibrate", "visual_grounder_feedback", "visual_candidates", "visual_ground", "visual_grounder_run", "visual_ground_action", "visual_analyze", "screen_capture_window_sck"],
             inputs: ["image", "query", "target_surface"],
             outputs: ["grounding_candidates", "action_plan", "verification_anchors"],
             handoffs: ["executor", "verifier"]
@@ -81,7 +81,7 @@ struct AgentRoleSystem {
             id: "browser_specialist",
             title: "Browser Specialist",
             mission: "Operate long web-app sessions through CDP observe/act/extract/wait with selector cache and session snapshots.",
-            tools: ["browser_agent_plan", "browser_agent_observe", "browser_agent_act", "browser_agent_extract", "browser_agent_wait", "browser_runtime_snapshot", "browser_cdp_observe", "browser_cdp_act", "browser_cdp_extract", "browser_cdp_wait"],
+            tools: ["browser_agent_contract", "browser_agent_plan", "browser_agent_observe", "browser_agent_act", "browser_agent_extract", "browser_agent_wait", "browser_agent_validate_extraction", "browser_runtime_snapshot", "browser_cdp_observe", "browser_cdp_act", "browser_cdp_extract", "browser_cdp_wait"],
             inputs: ["url", "web_goal", "selector_cache"],
             outputs: ["web_action_result", "browser_session_snapshot", "selector_repair"],
             handoffs: ["verifier", "recipe_runner"]
@@ -90,7 +90,7 @@ struct AgentRoleSystem {
             id: "recipe_runner",
             title: "Recipe Runner",
             mission: "Compile, adapt, and execute reusable workflow programs before falling back to manual app control.",
-            tools: ["recipe_program_compile", "recipe_execute_adaptive", "recipe_generalize", "recipe_repair_hint"],
+            tools: ["recipe_program_compile", "recipe_stabilize_program", "recipe_execute_adaptive", "recipe_generalize", "recipe_repair_hint"],
             inputs: ["recipe_id", "params", "task_context"],
             outputs: ["recipe_result", "repair_hint", "promoted_recipe"],
             handoffs: ["executor", "memory_curator"]
@@ -99,7 +99,7 @@ struct AgentRoleSystem {
             id: "memory_curator",
             title: "Memory Curator",
             mission: "Create durable episodes, consolidate context graph facts, and build compact context packs for long tasks.",
-            tools: ["memory_episode_consolidate", "memory_context_pack", "memory_semantic_recall", "memory_shadow_capture", "context_graph_ingest"],
+            tools: ["memory_episode_consolidate", "memory_context_pack", "memory_semantic_recall", "memory_shadow_capture", "shadow_episode_policy", "context_graph_ingest"],
             inputs: ["run_events", "task_outcome", "user_feedback"],
             outputs: ["episode", "context_graph_edges", "memory_context_pack"],
             handoffs: ["planner", "recipe_runner"]
@@ -108,7 +108,7 @@ struct AgentRoleSystem {
             id: "app_skill_specialist",
             title: "App Skill Specialist",
             mission: "Resolve, validate, and apply app-specific adapters, selectors, recipes, and compatibility metadata.",
-            tools: ["app_skill_route", "app_skill_package_validate", "app_skill_package_list", "app_skill_export_manifest"],
+            tools: ["app_skill_route", "app_skill_core_pack", "app_skill_sdk", "app_skill_package_validate", "app_skill_package_list", "app_skill_export_manifest"],
             inputs: ["app", "goal", "target_version"],
             outputs: ["skill_route", "selector_plan", "recipe_candidates"],
             handoffs: ["executor", "recipe_runner"]
@@ -117,7 +117,7 @@ struct AgentRoleSystem {
             id: "runtime_operator",
             title: "Runtime Operator",
             mission: "Keep long tasks alive with durable queues, graph ticks, pauses, feedback, and resume packets.",
-            tools: ["long_run_daemon_tick", "long_run_daemon_status", "task_graph_tick", "cockpit_command", "cockpit_live_state"],
+            tools: ["resident_agent_plan", "resident_agent_tick", "resident_agent_status", "long_run_daemon_tick", "long_run_daemon_status", "task_graph_tick", "cockpit_command", "cockpit_live_state"],
             inputs: ["task_graph", "queue", "user_commands"],
             outputs: ["scheduled_runs", "pause_resume_state", "runtime_report"],
             handoffs: ["planner", "executor", "memory_curator"]
@@ -126,7 +126,7 @@ struct AgentRoleSystem {
             id: "verifier",
             title: "Verifier",
             mission: "Verify effects against postconditions and decide whether to continue, repair, or complete.",
-            tools: ["observe_wait", "visual_ground", "browser_cdp_wait", "recipe_program_compile", "trajectory_resume_points"],
+            tools: ["observe_wait", "visual_ground", "browser_cdp_wait", "recipe_program_compile", "recipe_stabilize_program", "trajectory_resume_points", "cockpit_replay_spec"],
             inputs: ["expected_effect", "tool_result", "postconditions"],
             outputs: ["verification_result", "next_action", "failure_branch"],
             handoffs: ["executor", "recipe_runner", "memory_curator"]

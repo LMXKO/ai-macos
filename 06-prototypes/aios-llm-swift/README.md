@@ -86,6 +86,29 @@ AIOS now separates computer-use work into planner, executor, perception, recipe,
 
 The practical boundary is explicit: macOS cannot make every arbitrary native, inactive, offscreen, non-AX surface controllable through a single public API. AIOS therefore uses the deepest available non-invasive channel first, and only falls back to foreground coordinate control when no semantic/background path exists.
 
+## Long-Agent Parity Kernels
+
+The long-running computer-use layer now exposes the 10 product kernels needed for "AI keeps working on macOS software for a long time":
+
+```bash
+swift run --disable-sandbox aios tool long_agent_capability_matrix '{"goal":"持续在 Chrome 和 Figma 完成任务"}'
+swift run --disable-sandbox aios tool background_native_kernel '{"app_name":"Figma","surface":"canvas","action":"click","query":"play"}'
+swift run --disable-sandbox aios tool background_driver_probe '{"app_name":"Figma","surface":"canvas","action":"click","query":"play"}'
+swift run --disable-sandbox aios tool visual_grounder_model_registry '{}'
+swift run --disable-sandbox aios tool visual_grounder_policy '{"surface":"canvas","query":"play button"}'
+swift run --disable-sandbox aios tool recipe_stabilize_program '{"id":"create-calendar-event"}'
+swift run --disable-sandbox aios tool resident_agent_plan '{"goal":"watch a download and summarize it","app_name":"Finder"}'
+swift run --disable-sandbox aios tool resident_agent_tick '{"evidence":"manual tick"}'
+swift run --disable-sandbox aios tool shadow_episode_policy '{"goal":"long browser workflow"}'
+swift run --disable-sandbox aios tool browser_agent_contract '{"goal":"submit a form","url":"https://example.com/app"}'
+swift run --disable-sandbox aios tool app_skill_core_pack '{"install":false}'
+swift run --disable-sandbox aios tool cockpit_replay_spec '{"run_id":"<run_id>"}'
+swift run --disable-sandbox aios tool agent_harness_dispatch '{"goal":"持续在 Chrome 和 Figma 完成任务","app_name":"Chrome","surface":"canvas"}'
+swift run --disable-sandbox aios tool computer_use_model_stack '{"goal":"AI长时间自动驱动mac上的软件完成任务"}'
+```
+
+These tools map the current implementation against CUA-style background control, Ghost-style recipe/memory loops, Peekaboo-style capture/replay evidence, Stagehand-style browser primitives, and Codex-style resident/harness workflows. Native non-AX pixels still require an app adapter or external CUA-compatible driver capsule; the kernel makes that boundary explicit and keeps foreground coordinates opt-in.
+
 ## Long-Running Tasks
 
 AIOS persists execution state after planning, after tool results, after verification changes, and before incomplete exits. A crash, host restart, or max-step stop can be continued with:
