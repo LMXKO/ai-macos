@@ -1,0 +1,163 @@
+import AppKit
+import ApplicationServices
+import CoreGraphics
+import Foundation
+import ScreenCaptureKit
+import Security
+import ScriptingBridge
+import SQLite3
+import SwiftUI
+import Vision
+
+struct AppSkillPackage: Codable {
+    let schema: String
+    let id: String
+    let version: String
+    let appName: String
+    let bundleID: String
+    let minAIOSVersion: String
+    let capabilities: [String]
+    let tools: [String]
+    let recipes: [String]
+    let selectors: [String: String]
+    let permissions: [String]
+    let compatibility: [String: String]
+    let entrypoints: [String: String]
+    let notes: String
+
+    var skill: AppSkill {
+        AppSkill(
+            id: id,
+            appName: appName,
+            bundleID: bundleID,
+            version: version,
+            capabilities: capabilities,
+            tools: tools,
+            recipes: recipes,
+            selectors: selectors,
+            permissions: permissions,
+            notes: notes
+        )
+    }
+
+    var dictionary: [String: String] {
+        [
+            "schema": schema,
+            "id": id,
+            "version": version,
+            "app_name": appName,
+            "bundle_id": bundleID,
+            "min_aios_version": minAIOSVersion,
+            "capabilities": capabilities.joined(separator: ","),
+            "tools": tools.joined(separator: ","),
+            "recipes": recipes.joined(separator: ","),
+            "selectors": jsonStringValue(selectors),
+            "permissions": permissions.joined(separator: ","),
+            "compatibility": jsonStringValue(compatibility),
+            "entrypoints": jsonStringValue(entrypoints),
+            "notes": notes
+        ]
+    }
+}
+
+struct AppSkillPackageStore {
+    static let schema = "aios.app_skill.package.v1"
+
+    static var packagesURL: URL {
+        EventStore.appSkillsURL.appendingPathComponent("packages", isDirectory: true)
+    }
+
+    static func packageURL(id: String) -> URL {
+        packagesURL.appendingPathComponent(normalizeID(id), isDirectory: true)
+    }
+
+    static func manifestURL(id: String) -> URL {
+        packageURL(id: id).appendingPathComponent("skill-package.json")
+    }
+
+    @discardableResult
+    static func scaffold(
+        id: String,
+        appName: String,
+        bundleID: String = "",
+        version: String = "1",
+        capabilities: [String] = [],
+        tools: [String] = [],
+        recipes: [String] = [],
+        selectors: [String: String] = [:],
+        permissions: [String] = [],
+        notes: String = ""
+    ) throws -> AppSkillPackage {
+        let package = AppSkillPackage(
+            schema: schema,
+            id: normalizeID(id),
+            version: version,
+            appName: appName,
+            bundleID: bundleID,
+            minAIOSVersion: "0.1.0",
+            capabilities: capabilities,
+            tools: tools,
+            recipes: recipes,
+            selectors: selectors,
+            permissions: permissions,
+            compatibility: [
+                "macos": "14+",
+                "driver": "app_adapter_or_ax"
+            ],
+            entrypoints: [
+                "manifest": "skill-package.json",
+                "selectors": "selectors.json",
+                "recipes": "recipes/"
+            ],
+            notes: notes
+        )
+        let dir = packageURL(id: package.id)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("recipes", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("docs", isDirectory: true), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(package).write(to: dir.appendingPathComponent("skill-package.json"), options: [.atomic])
+        try writeJSONObject(selectors, to: dir.appendingPathComponent("selectors.json"))
+        let readme = """
+        # \(appName) AIOS Skill Package
+
+        Schema: \(schema)
+
+        Add recipes under `recipes/*.json`, selectors in `selectors.json`, and keep tool/capability declarations in `skill-package.json`.
+        """
+        try readme.write(to: dir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        return package
+    }
+
+    static func list() -> [AppSkillPackage] {
+        guard FileManager.default.fileExists(atPath: packagesURL.path),
+              let urls = try? FileManager.default.contentsOfDirectory(at: packagesURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        else { return [] }
+        return urls.compactMap { url in
+            let manifest = url.appendingPathComponent("skill-package.json")
+            guard let data = try? Data(contentsOf: manifest) else { return nil }
+            return try? JSONDecoder().decode(AppSkillPackage.self, from: data)
+        }
+    }
+
+    static func skills() -> [AppSkill] {
+        list().map(\.skill)
+    }
+
+    static func validate(_ package: AppSkillPackage, knownTools: Set<String>) -> [String] {
+        var issues: [String] = []
+        if package.schema != schema { issues.append("schema must be \(schema)") }
+        if package.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { issues.append("id is empty") }
+        if package.appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { issues.append("app_name is empty") }
+        let missing = package.tools.filter { !knownTools.contains($0) }
+        if !missing.isEmpty { issues.append("unknown tools: \(missing.joined(separator: ","))") }
+        let dir = packageURL(id: package.id)
+        if !FileManager.default.fileExists(atPath: dir.appendingPathComponent("selectors.json").path) {
+            issues.append("selectors.json missing")
+        }
+        if !FileManager.default.fileExists(atPath: dir.appendingPathComponent("recipes", isDirectory: true).path) {
+            issues.append("recipes directory missing")
+        }
+        return issues
+    }
+}
