@@ -371,11 +371,21 @@ final class ToolRegistry {
                 "max_results": schema("number", "Maximum candidates. Default 80."),
                 "use_sidecar": schema("boolean", "Ask configured AIOS_VISION_* sidecar to add/rerank candidates. Default true.")
             ]),
-            tool("visual_ground_action", "Select a grounded visual candidate and return an action plan; optionally execute foreground coordinate click/type with explicit allow_foreground.", [
+            tool("visual_ground_action", "Select a grounded visual candidate and return an action plan; optionally execute foreground coordinate click/type/hover/drag/scroll/long_press with explicit allow_foreground.", [
                 "query": schema("string", "Text/intent to ground."),
-                "action": schema("string", "click, type, verify, observe, drag, or hover. Default click."),
+                "action": schema("string", "click, type, verify, observe, drag, hover, scroll, or long_press. Default click."),
                 "candidate_id": schema("string", "Optional candidate id from visual_candidates/visual_ground."),
+                "to_query": schema("string", "Optional second target query for drag end point."),
+                "to_candidate_id": schema("string", "Optional second candidate id for drag end point."),
+                "to_x": schema("number", "Optional drag end x coordinate."),
+                "to_y": schema("number", "Optional drag end y coordinate."),
+                "delta_x": schema("number", "Optional drag delta x when no end target is provided."),
+                "delta_y": schema("number", "Optional drag delta y when no end target is provided."),
+                "direction": schema("string", "Scroll/drag direction: up, down, left, or right."),
+                "amount": schema("number", "Scroll lines or drag pixels. Default depends on action."),
+                "duration": schema("number", "Drag or long_press duration in seconds."),
                 "text": schema("string", "Text to type when action=type."),
+                "post_verify_query": schema("string", "Optional visual verifier query after execution."),
                 "execute": schema("boolean", "Whether to execute the plan. Default false."),
                 "allow_foreground": schema("boolean", "Required true for coordinate execution."),
                 "app_name": schema("string", "Optional app window to capture."),
@@ -664,6 +674,9 @@ final class ToolRegistry {
                 "feedback": schema("string", "Optional user feedback or instruction.")
             ], required: ["run_id", "command"]),
             tool("platform_status", "Return platform-level status: tool families, state root, session protocol schema, and module layout.", [:]),
+            tool("tool_service_catalog", "Return the service catalog/router boundary for ToolRegistry tools grouped by runtime module.", [
+                "tool": schema("string", "Optional tool name to resolve to one service.")
+            ]),
             tool("agent_role_plan", "Create a Codex-style role route for a long computer-use task: planner, specialists, executor, verifier, memory, runtime.", [
                 "goal": schema("string", "Task goal."),
                 "app_name": schema("string", "Optional app name."),
@@ -706,6 +719,7 @@ final class ToolRegistry {
                 "recipes": arraySchema("string", "Bundled recipe ids."),
                 "selectors_json": schema("string", "Optional selectors map as JSON object string."),
                 "permissions": arraySchema("string", "Required macOS/app permissions."),
+                "entrypoints_json": schema("string", "Optional entrypoints map such as {\"adapter\":\"adapters/adapter.sh\"}."),
                 "notes": schema("string", "Package notes.")
             ], required: ["id", "app_name"]),
             tool("app_skill_package_list", "List plugin-style app skill packages loaded from app-skills/packages/*.", [
@@ -723,6 +737,45 @@ final class ToolRegistry {
             tool("app_skill_export_manifest", "Export a built-in or package app skill manifest to a portable JSON artifact.", [
                 "id": schema("string", "Skill or package id.")
             ], required: ["id"]),
+            tool("app_skill_execute_adapter", "Execute a package-backed app skill adapter entrypoint with an AIOS JSON action payload.", [
+                "query": schema("string", "Task/app query used to route to a package."),
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "action": schema("string", "Adapter action such as observe, act, verify, click, type, or wait."),
+                "arguments_json": schema("string", "Optional adapter arguments JSON object.")
+            ], required: ["query"]),
+            tool("app_verifier_list", "List app-specific completion verifier contracts for messages, files, calendar, browser, canvas, IDE, and upload workflows.", [
+                "query": schema("string", "Optional app/effect/query filter."),
+                "limit": schema("number", "Maximum contracts. Default 50.")
+            ]),
+            tool("app_verifier_suggest", "Suggest app-specific completion verifier contracts for a goal/app/effect.", [
+                "goal": schema("string", "Task goal or completion condition."),
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "effect": schema("string", "Optional effect such as message_sent, file_created, calendar_event_created, web_state_reached, canvas_state_reached, or file_uploaded."),
+                "limit": schema("number", "Maximum contracts. Default 5.")
+            ]),
+            tool("app_verifier_plan", "Build a concrete verifier tool sequence and completion rule for an app-specific postcondition.", [
+                "goal": schema("string", "Task goal or completion condition."),
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "effect": schema("string", "Effect such as message_sent, file_created, calendar_event_created, web_state_reached, canvas_state_reached, or file_uploaded."),
+                "target": schema("string", "Recipient/chat/title/semantic target."),
+                "value": schema("string", "Message text, expected text, title, or output value."),
+                "path": schema("string", "Expected filesystem path."),
+                "url": schema("string", "Expected URL.")
+            ]),
+            tool("app_verifier_evaluate", "Evaluate an app-specific completion condition from live tools or a prior tool result/evidence JSON.", [
+                "goal": schema("string", "Task goal or completion condition."),
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "effect": schema("string", "Effect such as message_sent, file_created, calendar_event_created, web_state_reached, or document_exported."),
+                "target": schema("string", "Recipient/chat/title/semantic target."),
+                "value": schema("string", "Message text, expected text, title, or output value."),
+                "path": schema("string", "Expected filesystem path."),
+                "url": schema("string", "Expected URL."),
+                "evidence_json": schema("string", "Optional prior ToolResult data JSON to evaluate without probing live apps.")
+            ]),
             tool("trajectory_get", "Return a replayable summarized trajectory for a prior run.", [
                 "run_id": schema("string", "Run id."),
                 "limit": schema("number", "Maximum events. Default 200.")
@@ -839,6 +892,9 @@ final class ToolRegistry {
                 "after_seconds": schema("number", "Delay in seconds. Default 0.")
             ], required: ["goal"]),
             tool("background_driver_matrix", "List true-background driver channels including CUA-compatible external drivers, CDP, app adapters, and AX.", [:]),
+            tool("background_driver_capsule", "Return the unified background driver capsule contract and recent execution receipts.", [
+                "limit": schema("number", "Maximum receipts. Default 20.")
+            ]),
             tool("background_driver_dispatch", "Build or execute a CUA-compatible no-cursor/no-focus background driver request envelope.", [
                 "app_name": schema("string", "Optional app name."),
                 "bundle_id": schema("string", "Optional bundle id."),
@@ -899,6 +955,40 @@ final class ToolRegistry {
                 "instruction": schema("string", "Human instruction or feedback."),
                 "mode": schema("string", "replan, feedback, resume, branch, pause, or stop. Default replan.")
             ], required: ["run_id", "instruction"]),
+            tool("routine_create", "Create a durable recurring or trigger-based AIOS task. Schedules support every:<seconds>, at:<iso>, daily:HH:mm, weekly:mon@HH:mm, and cron:<min hour day month weekday>.", [
+                "name": schema("string", "Short routine name."),
+                "goal": schema("string", "Goal to submit when the routine fires."),
+                "schedule": schema("string", "Optional schedule: every:60, at:2026-05-27T10:00:00Z, daily:09:00, weekly:mon@09:00, cron:0 9 * * 1-5."),
+                "trigger_kind": schema("string", "schedule, file_exists, file_changed, app_running, or frontmost_app. Default schedule."),
+                "trigger_value": schema("string", "Trigger target such as a file path or app name/bundle id."),
+                "cooldown_seconds": schema("number", "Minimum seconds between fires. Default 60."),
+                "enabled": schema("boolean", "Whether the routine starts enabled. Default true."),
+                "notes": schema("string", "Optional notes.")
+            ], required: ["goal"]),
+            tool("routine_list", "List durable recurring/trigger routines and their next wake state.", [
+                "limit": schema("number", "Maximum routines. Default 50.")
+            ]),
+            tool("routine_tick", "Evaluate routines now and enqueue any due goals.", [:]),
+            tool("routine_remove", "Remove a durable routine by id.", [
+                "id": schema("string", "Routine id.")
+            ], required: ["id"]),
+            tool("long_task_trigger_create", "Create a durable event trigger that submits a long AIOS task when a condition becomes true.", [
+                "name": schema("string", "Short trigger name."),
+                "goal": schema("string", "Goal to submit when the trigger fires."),
+                "trigger_kind": schema("string", "file_exists, file_changed, app_running, frontmost_app, or schedule."),
+                "trigger_value": schema("string", "Trigger target such as a path or app name/bundle id."),
+                "schedule": schema("string", "Optional schedule gate. Use every:<seconds> for polling cadence."),
+                "cooldown_seconds": schema("number", "Minimum seconds between fires. Default 60."),
+                "enabled": schema("boolean", "Whether the trigger starts enabled. Default true."),
+                "notes": schema("string", "Optional notes.")
+            ], required: ["goal", "trigger_kind"]),
+            tool("long_task_trigger_list", "List durable long-task triggers/routines.", [
+                "limit": schema("number", "Maximum triggers. Default 50.")
+            ]),
+            tool("long_task_trigger_tick", "Evaluate long-task triggers now and enqueue due goals.", [:]),
+            tool("long_task_trigger_remove", "Remove a durable long-task trigger by id.", [
+                "id": schema("string", "Trigger/routine id.")
+            ], required: ["id"]),
             tool("memory_entity_graph", "Build a long-term entity/context graph over episodes, apps, tools, recipes, and memories.", [
                 "query": schema("string", "Optional query."),
                 "limit": schema("number", "Maximum entities. Default 30.")
@@ -1031,6 +1121,13 @@ final class ToolRegistry {
                 "success": schema("boolean", "Whether the candidate led to the expected result."),
                 "reason": schema("string", "Optional reason.")
             ], required: ["candidate_id", "success"]),
+            tool("visual_grounder_verify", "Verify that a visual candidate/query is still visible in the latest UI map cache and return reusable anchors.", [
+                "candidate_id": schema("string", "Optional candidate id to verify."),
+                "query": schema("string", "Grounding query."),
+                "surface": schema("string", "Surface hint."),
+                "image_path": schema("string", "Optional screenshot/image path."),
+                "limit": schema("number", "Maximum recent UI maps to inspect. Default 12.")
+            ]),
             tool("visual_grounder_policy", "Return the model/calibration/feedback policy for a visual grounding query.", [
                 "surface": schema("string", "Surface hint."),
                 "query": schema("string", "Grounding query.")
@@ -1104,6 +1201,33 @@ final class ToolRegistry {
             tool("learn_stop", "Stop the active learning session and save it as a recipe.", [
                 "recipe_id": schema("string", "Recipe id to save.")
             ], required: ["recipe_id"]),
+            tool("learn_workflow_plan", "Return the productized demonstration-to-recipe workflow: start, demonstrate, parameterize, confirm, reuse, and repair.", [
+                "goal": schema("string", "Workflow goal."),
+                "app_name": schema("string", "Optional target app."),
+                "verifier_effect": schema("string", "Optional expected effect such as message_sent or document_exported.")
+            ]),
+            tool("learn_workflow_start", "Start a durable learning workflow and optionally a tool-level learn session for a user demonstration.", [
+                "title": schema("string", "Learning workflow title."),
+                "goal": schema("string", "Task goal being demonstrated."),
+                "app_name": schema("string", "Optional target app."),
+                "start_tool_session": schema("boolean", "Also call learn_start. Default true."),
+                "notes": schema("string", "Optional notes.")
+            ], required: ["title"]),
+            tool("learn_workflow_finalize", "Promote a demonstrated recipe into a generalized program, attach verifier plan, and mark it awaiting confirmation or reusable.", [
+                "workflow_id": schema("string", "Optional workflow id returned by learn_workflow_start."),
+                "recipe_id": schema("string", "Recipe id created by learn_stop or learn_record_events."),
+                "source_run_id": schema("string", "Optional source run/recording id."),
+                "title": schema("string", "Optional learned workflow title."),
+                "verifier_effect": schema("string", "Optional effect such as message_sent, document_exported, web_state_reached."),
+                "verifier_target": schema("string", "Optional recipient/title/semantic target."),
+                "verifier_value": schema("string", "Optional expected text/title/value."),
+                "verifier_path": schema("string", "Optional expected output path."),
+                "verifier_url": schema("string", "Optional expected URL."),
+                "confirm": schema("boolean", "Mark reusable immediately if stability permits. Default false.")
+            ], required: ["recipe_id"]),
+            tool("learn_workflow_list", "List durable learning workflows and their reuse/confirmation status.", [
+                "limit": schema("number", "Maximum workflows. Default 20.")
+            ]),
             tool("finder_list_directory", "List files in a directory with names, types, sizes, and modified dates.", [
                 "path": schema("string", "Absolute or ~/ directory path. Default: ~/Downloads"),
                 "limit": schema("number", "Maximum entries. Default 80.")
@@ -1541,6 +1665,8 @@ final class ToolRegistry {
                 return try cockpitCommandTool(call.arguments)
             case "platform_status":
                 return platformStatusTool()
+            case "tool_service_catalog":
+                return toolServiceCatalogTool(call.arguments)
             case "agent_role_plan":
                 return agentRolePlanTool(call.arguments)
             case "agent_handoff_packet":
@@ -1561,6 +1687,16 @@ final class ToolRegistry {
                 return appSkillRouteTool(call.arguments)
             case "app_skill_export_manifest":
                 return try appSkillExportManifestTool(call.arguments)
+            case "app_skill_execute_adapter":
+                return try appSkillExecuteAdapterTool(call.arguments)
+            case "app_verifier_list":
+                return appVerifierListTool(call.arguments)
+            case "app_verifier_suggest":
+                return appVerifierSuggestTool(call.arguments)
+            case "app_verifier_plan":
+                return appVerifierPlanTool(call.arguments)
+            case "app_verifier_evaluate":
+                return try appVerifierEvaluateTool(call.arguments)
             case "trajectory_get":
                 return try trajectoryGetTool(call.arguments)
             case "trajectory_export":
@@ -1617,6 +1753,8 @@ final class ToolRegistry {
                 return try longRunScheduleTool(call.arguments)
             case "background_driver_matrix":
                 return backgroundDriverMatrixTool()
+            case "background_driver_capsule":
+                return backgroundDriverCapsuleTool(call.arguments)
             case "background_driver_dispatch":
                 return try backgroundDriverDispatchTool(call.arguments)
             case "visual_grounder_profiles":
@@ -1639,6 +1777,14 @@ final class ToolRegistry {
                 return try longTaskWatchTool(call.arguments)
             case "long_task_interrupt":
                 return try longTaskInterruptTool(call.arguments)
+            case "routine_create", "long_task_trigger_create":
+                return try routineCreateTool(call.arguments)
+            case "routine_list", "long_task_trigger_list":
+                return routineListTool(call.arguments)
+            case "routine_tick", "long_task_trigger_tick":
+                return try routineTickTool()
+            case "routine_remove", "long_task_trigger_remove":
+                return try routineRemoveTool(call.arguments)
             case "memory_entity_graph":
                 return memoryEntityGraphTool(call.arguments)
             case "memory_preference_digest":
@@ -1689,6 +1835,8 @@ final class ToolRegistry {
                 return try visualGrounderCalibrateTool(call.arguments)
             case "visual_grounder_feedback":
                 return try visualGrounderFeedbackTool(call.arguments)
+            case "visual_grounder_verify":
+                return visualGrounderVerifyTool(call.arguments)
             case "visual_grounder_policy":
                 return visualGrounderPolicyTool(call.arguments)
             case "recipe_stabilize_program":
@@ -1725,6 +1873,14 @@ final class ToolRegistry {
                 return try learnRecordEventsTool(call.arguments)
             case "learn_stop":
                 return try learnStopTool(call.arguments)
+            case "learn_workflow_plan":
+                return learnWorkflowPlanTool(call.arguments)
+            case "learn_workflow_start":
+                return try learnWorkflowStartTool(call.arguments)
+            case "learn_workflow_finalize":
+                return try learnWorkflowFinalizeTool(call.arguments)
+            case "learn_workflow_list":
+                return learnWorkflowListTool(call.arguments)
             case "finder_list_directory":
                 return try finderListDirectory(call.arguments)
             case "finder_file_info":
@@ -3324,6 +3480,7 @@ final class ToolRegistry {
         guard let x = double(plan["x"]), let y = double(plan["y"]) else {
             return ToolResult(success: false, evidence: "Selected visual candidate has no action point.", data: plan, error: "visual_action_missing_point")
         }
+        var outputPlan = plan
         switch action {
         case "click":
             try clickPoint(x: x, y: y)
@@ -3333,10 +3490,78 @@ final class ToolRegistry {
                 _ = try clipboardSetText(["text": text])
                 _ = try uiPaste()
             }
+        case "hover":
+            try moveMouse(x: x, y: y)
+        case "drag":
+            let destination = visualDragDestination(args: args, candidates: candidates, originX: x, originY: y)
+            try dragMouse(from: CGPoint(x: x, y: y), to: CGPoint(x: destination.x, y: destination.y), duration: double(args["duration"]) ?? 0.45)
+            outputPlan["to_x"] = "\(Int(destination.x))"
+            outputPlan["to_y"] = "\(Int(destination.y))"
+            outputPlan["drag_reason"] = destination.reason
+        case "scroll":
+            var scrollArgs: [String: Any] = [
+                "x": x,
+                "y": y,
+                "direction": string(args["direction"]) ?? "down",
+                "amount": int(args["amount"]) ?? 6
+            ]
+            if let rawAmount = args["amount"] { scrollArgs["amount"] = rawAmount }
+            let scroll = try uiScroll(scrollArgs)
+            outputPlan["scroll_result"] = scroll.jsonString
+        case "long press", "long_press":
+            try longPress(x: x, y: y, duration: double(args["duration"]) ?? 0.8)
+        case "observe", "verify":
+            break
         default:
             return ToolResult(success: false, evidence: "Execution for visual action \(action) is not implemented; returned plan only.", data: plan, error: "visual_action_execute_unsupported")
         }
-        return ToolResult(success: true, evidence: "Executed visual grounded \(action).", data: plan)
+        if let postVerify = string(args["post_verify_query"]), !postVerify.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let verify = visualGrounderVerifyTool([
+                "query": postVerify,
+                "candidate_id": outputPlan["candidate_id"] ?? "",
+                "image_path": grounding.data["image_path"] ?? "",
+                "surface": string(args["surface"]) ?? ""
+            ])
+            outputPlan["post_verify"] = verify.jsonString
+            outputPlan["post_verified"] = verify.success ? "true" : "false"
+            return ToolResult(success: verify.success, evidence: verify.success ? "Executed and verified visual grounded \(action)." : "Executed visual grounded \(action), but post-verification failed.", data: outputPlan, error: verify.success ? nil : verify.error)
+        }
+        return ToolResult(success: true, evidence: "Executed visual grounded \(action).", data: outputPlan)
+    }
+
+    private func visualDragDestination(args: [String: Any], candidates: [[String: String]], originX: Double, originY: Double) -> (x: Double, y: Double, reason: String) {
+        if let toX = double(args["to_x"]), let toY = double(args["to_y"]) {
+            return (toX, toY, "explicit to_x/to_y")
+        }
+        if let toID = string(args["to_candidate_id"]), !toID.isEmpty,
+           let candidate = candidates.first(where: { $0["id"] == toID }),
+           let toX = double(candidate["center_x"]), let toY = double(candidate["center_y"]) {
+            return (toX, toY, "to_candidate_id \(toID)")
+        }
+        if let toQuery = string(args["to_query"]), !toQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let normalized = normalizeForSearch(toQuery)
+            if let candidate = candidates.first(where: { candidate in
+                normalizeForSearch([candidate["label"], candidate["text"], candidate["role"], candidate["kind"]].compactMap { $0 }.joined(separator: " ")).contains(normalized)
+            }),
+               let toX = double(candidate["center_x"]), let toY = double(candidate["center_y"]) {
+                return (toX, toY, "to_query \(toQuery)")
+            }
+        }
+        if let dx = double(args["delta_x"]) ?? double(args["dx"]),
+           let dy = double(args["delta_y"]) ?? double(args["dy"]) {
+            return (originX + dx, originY + dy, "delta")
+        }
+        let amount = double(args["amount"]) ?? 160
+        switch normalizeForSearch(string(args["direction"]) ?? "right") {
+        case "left":
+            return (originX - amount, originY, "direction left")
+        case "up":
+            return (originX, originY - amount, "direction up")
+        case "down":
+            return (originX, originY + amount, "direction down")
+        default:
+            return (originX + amount, originY, "direction right")
+        }
     }
 
     private func visualGroundSchema() -> ToolResult {
@@ -4322,7 +4547,15 @@ final class ToolRegistry {
     private func platformStatusTool() -> ToolResult {
         var data = SessionProtocolStore.platformStatus(toolDefinitions: definitions)
         data["session_event_schema"] = jsonStringValue(SessionProtocolStore.schemaDescription())
+        data["service_catalog"] = jsonStringValue(ToolServiceCatalog.catalog(toolDefinitions: definitions))
         return ToolResult(success: true, evidence: "Loaded AIOS platform status.", data: data)
+    }
+
+    private func toolServiceCatalogTool(_ args: [String: Any]) -> ToolResult {
+        if let tool = string(args["tool"]), !tool.isEmpty {
+            return ToolResult(success: true, evidence: "Resolved tool service boundary.", data: ToolServiceCatalog.serviceFor(toolName: tool))
+        }
+        return ToolResult(success: true, evidence: "Loaded tool service catalog.", data: ToolServiceCatalog.catalog(toolDefinitions: definitions))
     }
 
     private func agentRolePlanTool(_ args: [String: Any]) -> ToolResult {
@@ -4406,6 +4639,13 @@ final class ToolRegistry {
             else { return [:] }
             return parsed.compactMapValues { string($0) }
         }()
+        let entrypoints: [String: String] = {
+            guard let raw = string(args["entrypoints_json"]),
+                  let data = raw.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return [:] }
+            return parsed.compactMapValues { string($0) }
+        }()
         let package = try AppSkillPackageStore.scaffold(
             id: id,
             appName: appName,
@@ -4416,6 +4656,7 @@ final class ToolRegistry {
             recipes: (try? stringArray(args["recipes"], name: "recipes")) ?? [],
             selectors: selectors,
             permissions: (try? stringArray(args["permissions"], name: "permissions")) ?? [],
+            entrypoints: entrypoints,
             notes: string(args["notes"]) ?? ""
         )
         let knownTools = Set(definitions.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
@@ -4469,6 +4710,181 @@ final class ToolRegistry {
         guard let id = string(args["id"]), !id.isEmpty else { throw RuntimeError("id is required") }
         let url = try AppSkillRuntime.exportManifest(id: id)
         return ToolResult(success: true, evidence: "Exported app skill manifest.", data: ["id": id, "path": url.path])
+    }
+
+    private func appSkillExecuteAdapterTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let query = string(args["query"]), !query.isEmpty else { throw RuntimeError("query is required") }
+        let adapterArgs = try parseJSONObject(string(args["arguments_json"]) ?? "{}")
+        return try AppSkillRuntime.executeAdapter(
+            query: query,
+            appName: string(args["app_name"]) ?? "",
+            bundleID: string(args["bundle_id"]) ?? "",
+            action: string(args["action"]) ?? "observe",
+            arguments: adapterArgs
+        )
+    }
+
+    private func appVerifierListTool(_ args: [String: Any]) -> ToolResult {
+        let contracts = AppVerifierStore.list(query: string(args["query"]) ?? "", limit: int(args["limit"]) ?? 50)
+        return ToolResult(success: true, evidence: "Listed app-specific verifier contracts.", data: [
+            "schema": "aios.app_verifier.list.v1",
+            "contracts": jsonStringValue(contracts.map(\.dictionary)),
+            "count": "\(contracts.count)"
+        ])
+    }
+
+    private func appVerifierSuggestTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Suggested app-specific verifier contracts.", data: AppVerifierStore.suggest(
+            goal: string(args["goal"]) ?? "",
+            appName: string(args["app_name"]) ?? "",
+            bundleID: string(args["bundle_id"]) ?? "",
+            effect: string(args["effect"]) ?? "",
+            limit: int(args["limit"]) ?? 5
+        ))
+    }
+
+    private func appVerifierPlanTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Built app-specific verifier plan.", data: appVerifierPlanData(args))
+    }
+
+    private func appVerifierEvaluateTool(_ args: [String: Any]) throws -> ToolResult {
+        var data = appVerifierPlanData(args)
+        let target = string(args["target"]) ?? ""
+        let value = string(args["value"]) ?? string(args["text"]) ?? ""
+        let path = (string(args["path"]) ?? "").expandingTildeInPath
+        let url = string(args["url"]) ?? ""
+        if let evidenceJSON = string(args["evidence_json"]), !evidenceJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let evidence = try parseJSONObject(evidenceJSON)
+            let ok = appVerifierEvidenceIndicatesSuccess(evidence, target: target, value: value, path: path, url: url)
+            data["evidence_json"] = jsonStringValue(evidence)
+            data["verified"] = ok ? "true" : "false"
+            return ToolResult(
+                success: ok,
+                evidence: ok ? "Prior evidence satisfies app verifier contract." : "Prior evidence does not satisfy app verifier contract.",
+                data: data,
+                error: ok ? nil : "app_verifier_evidence_failed"
+            )
+        }
+
+        let effect = normalizeForSearch(string(args["effect"]) ?? data["effect"] ?? "")
+        let appText = normalizeForSearch([string(args["app_name"]), string(args["bundle_id"]), data["contract"]].compactMap { $0 }.joined(separator: " "))
+        if effect.contains("message") || appText.contains("wechat") || appText.contains("lark") || appText.contains("feishu") || appText.contains("qq") {
+            return try appVerifierEvaluateChat(args: args, planData: data, target: target, value: value, appText: appText)
+        }
+        if effect.contains("file_created") || effect.contains("document_exported") || effect.contains("pdf") || effect.contains("path_opened") {
+            let checkPath = path.isEmpty ? value.expandingTildeInPath : path
+            guard !checkPath.isEmpty else { throw RuntimeError("path or value is required for file/document verification") }
+            let exists = FileManager.default.fileExists(atPath: checkPath)
+            data["path"] = checkPath
+            data["verified"] = exists ? "true" : "false"
+            if exists {
+                let info = try finderFileInfo(["path": checkPath])
+                data["file_info"] = jsonStringValue(info.data)
+            }
+            return ToolResult(success: exists, evidence: exists ? "Verified expected filesystem artifact." : "Expected filesystem artifact was not found.", data: data, error: exists ? nil : "app_verifier_file_missing")
+        }
+        if effect.contains("calendar") {
+            let title = value.isEmpty ? target : value
+            guard !title.isEmpty else { throw RuntimeError("title/target/value is required for calendar verification") }
+            let result = try calendarFindEvents(["title": title, "days": int(args["days"]) ?? 365])
+            let ok = result.success && (result.data["events"] ?? "[]") != "[]"
+            data["verified"] = ok ? "true" : "false"
+            data["calendar_result"] = jsonStringValue(result.data)
+            return ToolResult(success: ok, evidence: ok ? "Verified Calendar event." : "Calendar event was not found.", data: data, error: ok ? nil : "app_verifier_calendar_missing")
+        }
+        if effect.contains("web") || appText.contains("chrome") || appText.contains("safari") {
+            return try appVerifierEvaluateWeb(args: args, planData: data, value: value, url: url, appText: appText)
+        }
+        return ToolResult(
+            success: false,
+            evidence: "No live evaluator is implemented for this verifier; use the returned plan or provide evidence_json.",
+            data: data,
+            error: "app_verifier_live_evaluator_missing"
+        )
+    }
+
+    private func appVerifierPlanData(_ args: [String: Any]) -> [String: String] {
+        AppVerifierStore.plan(
+            goal: string(args["goal"]) ?? "",
+            appName: string(args["app_name"]) ?? "",
+            bundleID: string(args["bundle_id"]) ?? "",
+            effect: string(args["effect"]) ?? "",
+            target: string(args["target"]) ?? "",
+            value: string(args["value"]) ?? string(args["text"]) ?? "",
+            path: string(args["path"]) ?? "",
+            url: string(args["url"]) ?? ""
+        )
+    }
+
+    private func appVerifierEvaluateChat(args: [String: Any], planData: [String: String], target: String, value: String, appText: String) throws -> ToolResult {
+        let identity: (name: String, bundleID: String?)
+        if appText.contains("lark") || appText.contains("feishu") {
+            identity = ("Lark", nil)
+        } else if appText.contains("qq") {
+            identity = ("QQ", "com.tencent.qq")
+        } else {
+            identity = ("WeChat", "com.tencent.xinWeChat")
+        }
+        var data = planData
+        var checks: [[String: String]] = []
+        var ok = true
+        if !target.isEmpty {
+            let recipient = try chatVerify(appName: identity.name, bundleID: identity.bundleID, expected: target, scope: .currentChat)
+            checks.append(["kind": "recipient", "success": recipient.success ? "true" : "false", "evidence": recipient.evidence, "error": recipient.error ?? ""])
+            ok = ok && recipient.success
+        }
+        if !value.isEmpty {
+            let probes = messageVerificationProbes(value)
+            let message = try chatVerifyAnyProbe(appName: identity.name, bundleID: identity.bundleID, probes: probes, scope: .message, attempts: int(args["attempts"]) ?? 2)
+            checks.append(["kind": "message", "success": message.success ? "true" : "false", "evidence": message.evidence, "error": message.error ?? "", "probe": probes.first ?? ""])
+            ok = ok && message.success
+        }
+        data["verified"] = ok ? "true" : "false"
+        data["verified_recipient"] = (!target.isEmpty && checks.contains { $0["kind"] == "recipient" && $0["success"] == "true" }) ? "true" : (target.isEmpty ? "" : "false")
+        data["verified_message"] = (!value.isEmpty && checks.contains { $0["kind"] == "message" && $0["success"] == "true" }) ? "true" : (value.isEmpty ? "" : "false")
+        data["checks"] = jsonStringValue(checks)
+        return ToolResult(success: ok, evidence: ok ? "Verified chat completion condition." : "Chat completion condition was not verified.", data: data, error: ok ? nil : "app_verifier_chat_failed")
+    }
+
+    private func appVerifierEvaluateWeb(args: [String: Any], planData: [String: String], value: String, url: String, appText: String) throws -> ToolResult {
+        var data = planData
+        let useSafari = appText.contains("safari")
+        var ok = true
+        var checks: [[String: String]] = []
+        if !url.isEmpty {
+            let current = try (useSafari ? safariGetCurrentURL() : chromeGetCurrentTab())
+            let currentURL = current.data["url"] ?? ""
+            let urlOK = currentURL.localizedCaseInsensitiveContains(url) || url.localizedCaseInsensitiveContains(currentURL)
+            checks.append(["kind": "url", "success": urlOK ? "true" : "false", "expected": url, "actual": currentURL])
+            ok = ok && urlOK
+        }
+        if !value.isEmpty {
+            let page = try (useSafari ? safariGetPageText() : chromeGetPageText())
+            let text = page.data["result"] ?? page.data["text"] ?? ""
+            let textOK = text.localizedCaseInsensitiveContains(value)
+            checks.append(["kind": "text", "success": textOK ? "true" : "false", "expected": value, "excerpt": truncateMiddle(text, maxCharacters: 1_500)])
+            ok = ok && textOK
+        }
+        data["verified"] = ok ? "true" : "false"
+        data["verified_current_url"] = checks.contains { $0["kind"] == "url" && $0["success"] == "true" } ? "true" : (url.isEmpty ? "" : "false")
+        data["checks"] = jsonStringValue(checks)
+        return ToolResult(success: ok, evidence: ok ? "Verified browser completion condition." : "Browser completion condition was not verified.", data: data, error: ok ? nil : "app_verifier_web_failed")
+    }
+
+    private func appVerifierEvidenceIndicatesSuccess(_ evidence: [String: Any], target: String, value: String, path: String, url: String) -> Bool {
+        let verifiedKeys = ["verified", "success", "verified_message", "verified_recipient", "verified_current_url"]
+        let explicit = verifiedKeys.contains { bool(evidence[$0]) == true }
+        let text = normalizeForSearch(evidence.values.compactMap { item -> String? in
+            if let string = item as? String { return string }
+            if let number = item as? NSNumber { return number.stringValue }
+            if JSONSerialization.isValidJSONObject(item) { return jsonStringValue(item) }
+            return nil
+        }.joined(separator: " "))
+        let targetOK = target.isEmpty || text.contains(normalizeForSearch(target))
+        let valueOK = value.isEmpty || text.contains(normalizeForSearch(messageVerificationProbe(value))) || text.contains(normalizeForSearch(value))
+        let pathOK = path.isEmpty || text.contains(normalizeForSearch(path)) || FileManager.default.fileExists(atPath: path)
+        let urlOK = url.isEmpty || text.contains(normalizeForSearch(url))
+        return explicit && targetOK && valueOK && pathOK && urlOK
     }
 
     private func trajectoryGetTool(_ args: [String: Any]) throws -> ToolResult {
@@ -4762,7 +5178,15 @@ final class ToolRegistry {
 
     private func backgroundDriverMatrixTool() -> ToolResult {
         ToolResult(success: true, evidence: "Loaded background driver matrix.", data: [
-            "drivers": jsonStringValue(BackgroundDriverBridge.matrix())
+            "drivers": jsonStringValue(BackgroundDriverBridge.matrix()),
+            "capsule_contract": jsonStringValue(BackgroundDriverCapsuleStore.contract())
+        ])
+    }
+
+    private func backgroundDriverCapsuleTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Loaded background driver capsule contract.", data: [
+            "contract": jsonStringValue(BackgroundDriverCapsuleStore.contract()),
+            "receipts": jsonStringValue(BackgroundDriverCapsuleStore.recent(limit: int(args["limit"]) ?? 20))
         ])
     }
 
@@ -4779,6 +5203,18 @@ final class ToolRegistry {
         data["runtime_result"] = result.jsonString
         data["runtime_evidence"] = result.evidence
         data["runtime_error"] = result.error ?? ""
+        if let requestText = data["request"],
+           let requestData = requestText.data(using: .utf8),
+           let request = try? JSONSerialization.jsonObject(with: requestData) as? [String: Any] {
+            data["receipt"] = jsonStringValue(BackgroundDriverCapsuleStore.recordReceipt(
+                driver: data["selected_driver"] ?? "",
+                request: request,
+                status: data["status"] ?? "",
+                mode: "builtin",
+                result: result,
+                error: result.error ?? ""
+            ))
+        }
         return ToolResult(
             success: result.success,
             evidence: result.success ? "Executed background driver through built-in runtime." : "Built-in background driver failed.",
@@ -4846,6 +5282,18 @@ final class ToolRegistry {
             appName: string(args["app_name"]) ?? "",
             bundleID: string(args["bundle_id"]) ?? ""
         )
+        if route.entrypoints["adapter"]?.isEmpty == false {
+            let adapterResult = try AppSkillRuntime.executeAdapter(
+                query: string(args["query"]) ?? string(args["goal"]) ?? "",
+                appName: string(args["app_name"]) ?? "",
+                bundleID: string(args["bundle_id"]) ?? "",
+                action: action,
+                arguments: args
+            )
+            if adapterResult.success || route.tools.isEmpty {
+                return adapterResult
+            }
+        }
         let candidates = route.tools.filter { tool in
             let normalized = normalizeForSearch(tool)
             switch action {
@@ -4945,6 +5393,41 @@ final class ToolRegistry {
         guard let runID = string(args["run_id"]), !runID.isEmpty else { throw RuntimeError("run_id is required") }
         guard let instruction = string(args["instruction"]), !instruction.isEmpty else { throw RuntimeError("instruction is required") }
         return ToolResult(success: true, evidence: "Applied long-task interrupt.", data: try LongTaskRuntimeEngine.interrupt(runID: runID, instruction: instruction, mode: string(args["mode"]) ?? "replan"))
+    }
+
+    private func routineCreateTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let goal = string(args["goal"]), !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError("goal is required")
+        }
+        let job = try RoutineStore.create(
+            name: string(args["name"]) ?? "",
+            goal: goal,
+            schedule: string(args["schedule"]) ?? "",
+            triggerKind: string(args["trigger_kind"]) ?? "schedule",
+            triggerValue: string(args["trigger_value"]) ?? "",
+            cooldownSeconds: int(args["cooldown_seconds"]) ?? 60,
+            enabled: bool(args["enabled"]) ?? true,
+            notes: string(args["notes"]) ?? ""
+        )
+        return ToolResult(success: true, evidence: "Created durable routine/trigger.", data: job.dictionary)
+    }
+
+    private func routineListTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Loaded durable routines/triggers.", data: RoutineStore.status(limit: int(args["limit"]) ?? 50))
+    }
+
+    private func routineTickTool() throws -> ToolResult {
+        let fires = try RoutineStore.tick()
+        return ToolResult(success: true, evidence: "Evaluated routines; fired \(fires.count).", data: [
+            "fires": jsonStringValue(fires.map(\.dictionary)),
+            "status": jsonStringValue(RoutineStore.status())
+        ])
+    }
+
+    private func routineRemoveTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let id = string(args["id"]), !id.isEmpty else { throw RuntimeError("id is required") }
+        let removed = try RoutineStore.remove(id: id)
+        return ToolResult(success: removed, evidence: removed ? "Removed routine/trigger." : "Routine/trigger not found.", data: ["id": id], error: removed ? nil : "routine_not_found")
     }
 
     private func memoryEntityGraphTool(_ args: [String: Any]) -> ToolResult {
@@ -5108,6 +5591,16 @@ final class ToolRegistry {
 
     private func visualGrounderFeedbackTool(_ args: [String: Any]) throws -> ToolResult {
         ToolResult(success: true, evidence: "Recorded visual grounding feedback.", data: try VisualGroundingQualityStore.feedback(args: args))
+    }
+
+    private func visualGrounderVerifyTool(_ args: [String: Any]) -> ToolResult {
+        let data = VisualGrounderRuntime.verify(args: args)
+        return ToolResult(
+            success: data["verified"] == "true",
+            evidence: data["verified"] == "true" ? "Verified visual grounding candidate." : "Visual grounding candidate was not verified.",
+            data: data,
+            error: data["verified"] == "true" ? nil : "visual_candidate_not_verified"
+        )
     }
 
     private func visualGrounderPolicyTool(_ args: [String: Any]) -> ToolResult {
@@ -5283,6 +5776,56 @@ final class ToolRegistry {
         guard let recipeID = string(args["recipe_id"]), !recipeID.isEmpty else { throw RuntimeError("recipe_id is required") }
         let recipe = try LearningStore.stop(recipeID: recipeID)
         return ToolResult(success: true, evidence: "Saved learned recipe.", data: ["recipe": recipe.jsonString])
+    }
+
+    private func learnWorkflowPlanTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(success: true, evidence: "Built demonstration-to-recipe learning workflow.", data: LearnWorkflowStore.plan(
+            goal: string(args["goal"]) ?? "",
+            appName: string(args["app_name"]) ?? "",
+            verifierEffect: string(args["verifier_effect"]) ?? ""
+        ))
+    }
+
+    private func learnWorkflowStartTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let title = string(args["title"]), !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw RuntimeError("title is required") }
+        let record = try LearnWorkflowStore.start(
+            title: title,
+            goal: string(args["goal"]) ?? "",
+            appName: string(args["app_name"]) ?? "",
+            startToolSession: bool(args["start_tool_session"]) ?? true,
+            notes: string(args["notes"]) ?? ""
+        )
+        return ToolResult(success: true, evidence: "Started durable learning workflow.", data: record.dictionary)
+    }
+
+    private func learnWorkflowFinalizeTool(_ args: [String: Any]) throws -> ToolResult {
+        guard let recipeID = string(args["recipe_id"]), !recipeID.isEmpty else { throw RuntimeError("recipe_id is required") }
+        let record = try LearnWorkflowStore.finalize(
+            workflowID: string(args["workflow_id"]) ?? "",
+            recipeID: recipeID,
+            sourceRunID: string(args["source_run_id"]) ?? "",
+            title: string(args["title"]) ?? "",
+            verifierEffect: string(args["verifier_effect"]) ?? "",
+            verifierTarget: string(args["verifier_target"]) ?? "",
+            verifierValue: string(args["verifier_value"]) ?? "",
+            verifierPath: string(args["verifier_path"]) ?? "",
+            verifierURL: string(args["verifier_url"]) ?? "",
+            confirm: bool(args["confirm"]) ?? false
+        )
+        return ToolResult(
+            success: record.status == "ready_for_reuse" || record.status == "awaiting_confirmation",
+            evidence: record.status == "ready_for_reuse" ? "Finalized learned workflow for reuse." : "Finalized learned workflow and attached verifier plan; awaiting confirmation.",
+            data: record.dictionary
+        )
+    }
+
+    private func learnWorkflowListTool(_ args: [String: Any]) -> ToolResult {
+        let records = LearnWorkflowStore.list(limit: int(args["limit"]) ?? 20)
+        return ToolResult(success: true, evidence: "Listed durable learning workflows.", data: [
+            "schema": "aios.learn.workflow.list.v1",
+            "workflows": jsonStringValue(records.map(\.dictionary)),
+            "count": "\(records.count)"
+        ])
     }
 
     private func finderListDirectory(_ args: [String: Any]) throws -> ToolResult {

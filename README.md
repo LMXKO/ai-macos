@@ -1,473 +1,604 @@
-# AI macOS System Layer
+# AIOS for macOS
 
-## Purpose
+AIOS 的目标是把 macOS 变成一个可被 AI 长时间、自动、可验证地驱动的工作环境。
 
-This project builds a system-level AI execution layer for macOS.
+它不是聊天窗口，也不是只会看截图点坐标的脚本机器人。这个项目要做的是一个 macOS AI 执行层：AI 接收你的任务，观察真实 App 和系统状态，选择最稳定的控制通道，跨多个软件推进任务，并在每个关键动作后验证结果。
 
-The final goal is not a chatbot, menu bar assistant, or screen-clicking bot. The final goal is a trusted macOS capability that can observe installed applications, choose the safest available control path, operate across applications, and verify the result after each action.
-
-In practical terms, the AI should become a trusted execution layer inside the macOS environment:
-
-- observe application, window, screen, notification, file, and system state
-- understand the current user task
-- choose native app/system interfaces before visual automation
-- act across multiple installed applications
-- verify whether the action actually succeeded
-- respect macOS privacy controls, TCC permissions, sandboxing, secure input, and user consent
-
-macOS cannot be forked like Android or freely reshaped like Linux. The practical path is a signed native app plus helper services, LaunchAgent or LaunchDaemon integration, Accessibility permissions, Screen Recording permissions, Automation permissions, and carefully scoped privileged helpers where needed.
-
-## System-Level Definition
-
-This project is considered system-level only if it integrates with macOS trust and permission paths rather than behaving like a normal foreground app.
-
-Minimum definition:
-
-- it runs as a persistent app/service, not only as a foreground chat window
-- it can observe active applications through Accessibility, window metadata, screenshots, or app-specific APIs
-- it can execute actions through Apple Events, Shortcuts, app APIs, Accessibility actions, or controlled input injection
-- it re-observes and verifies after each action
-- it has explicit TCC permissions, audit logs, user confirmation gates, and a reliable stop path
-
-Screenshot-only or coordinate-only automation is useful for prototypes but is not the target architecture.
-
-## Research Summary
-
-Current open-source projects do not provide a complete macOS-level AI OS. They provide useful pieces for desktop AI agents and automation.
-
-### Current Judgment
-
-macOS can support the goal "AI drives multiple installed apps to complete user tasks", but it does so as a platform-integrated desktop agent rather than a forked or modified operating system.
-
-The practical target is:
-
-- a trusted native macOS app or background agent
-- Accessibility, Screen Recording, Automation, and optional helper permissions
-- app control through Apple Events, Shortcuts, app APIs, AX actions, and fallback input
-- an observe-act-verify loop shared with the Linux and Android projects
-
-The active Swift prototype in `06-prototypes/aios-llm-swift` now implements the core long-running computer-use runtime layers:
-
-- deep control routing through CDP/DOM, AppleScript/SDEF, non-invasive AX, visual grounding, and opt-in foreground fallback
-- visual grounding plus an OpenAI-compatible vision sidecar hook for VQA/layout/icon reasoning
-- recipe workflow programs with parameters, pre/postconditions, branches, loops, recovery, promotion, compilation, and refinement
-- durable queue/checkpoint/schedule/status runtime for long-running tasks
-- app skill manifests that can be installed locally instead of hard-coding every adapter into Swift
-- Stagehand-style browser observe/act/extract/wait tools on top of Chrome CDP
-- memory profile, episode recall, and context graph ingestion/query
-- cockpit/replay session export for inspecting, resuming, and turning trajectories into reusable workflows
-- long-agent parity kernels: native background driver probe, visual model registry/calibration/feedback, resident agent sessions, Shadow-style episode policy, core app-skill pack, Codex-style harness dispatch, and computer-use model stack
-
-The key boundary is that the AI operates through Apple-approved control surfaces. It should not assume it can bypass TCC, Secure Input, sandboxing, DRM, banking/payment protections, or per-app Automation prompts.
-
-### Closest Open-Source Implementations
-
-- [mediar-ai/fazm](https://github.com/mediar-ai/fazm): closest product-shape reference. Native macOS AI computer agent, useful for understanding a polished Mac app, permissions, and multi-app workflows.
-- [ghostwright/ghost-os](https://github.com/ghostwright/ghost-os): useful as an "eyes and hands for agents" reference. Good for thinking about exposing macOS control as an agent/MCP-compatible capability layer.
-- [trycua/cua](https://github.com/trycua/cua): useful for computer-use infrastructure, trajectories, evaluation, background execution, and verification around desktop agents.
-- [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP): useful as a lightweight MCP server pattern for exposing macOS app/window/UI control to agents.
-- [macOS26/Agent](https://github.com/macOS26/Agent): useful as a developer-focused macOS agent reference, especially around Accessibility-driven app operation and local/remote model provider integration.
-- [OpenInterpreter/open-interpreter](https://github.com/OpenInterpreter/open-interpreter): useful for local natural-language computer control, but it is broader than macOS and should be treated as a prototype/runtime reference.
-- [accomplish-ai/accomplish](https://github.com/accomplish-ai/accomplish): useful for desktop AI coworker workflows, but not a macOS system-layer implementation.
-
-Recommended priority for this project:
-
-1. Study Fazm for product shape and native macOS agent UX.
-2. Study Ghost OS and MacOS-MCP for exposing macOS control as agent tools.
-3. Study CUA for computer-use testing, trajectory recording, and verification.
-4. Use Open Interpreter and Accomplish as broader desktop-agent references, not as the system-layer base.
-
-### AI And Desktop Agent References
-
-- [OpenInterpreter/open-interpreter](https://github.com/OpenInterpreter/open-interpreter): natural-language local computer control reference; useful for prototyping agent workflows.
-- [accomplish-ai/accomplish](https://github.com/accomplish-ai/accomplish): desktop AI coworker reference; useful for multi-app desktop workflows.
-- [All-Hands-AI/OpenHands](https://github.com/All-Hands-AI/OpenHands): agent runtime reference; useful for task orchestration and tool use patterns.
-- [agiresearch/AIOS](https://github.com/agiresearch/AIOS): agent OS runtime concepts; useful for memory, scheduling, and tool abstraction.
-- OpenAI Codex (`00-references/codex-main`): useful as the closest reference for an LLM-driven tool runtime. It is not a macOS automation layer, but its tool registry, event stream, approval model, sandbox policy, and output truncation patterns map well to this project.
-
-### Codex Reference Takeaways
-
-Codex should influence the runtime shape, not the language stack. The Swift prototype should borrow these ideas:
-
-- `codex-rs/core/src/tools/router.rs` and `registry.rs`: keep model-visible tool schemas separate from the local tool implementations.
-- `codex-rs/core/src/tools/orchestrator.rs`: route every tool call through one policy point before execution.
-- `codex-rs/protocol/src/protocol.rs`: model the task as a turn with structured events such as start, tool begin, tool end, warning, and complete.
-- `codex-rs/protocol/src/approvals.rs`: represent risky actions as approval requests with action, reason, and possible decisions.
-- `codex-rs/core/src/unified_exec/head_tail_buffer.rs`: cap large tool outputs and preserve the beginning and ending as evidence.
-
-For this project, the minimal Swift version is:
+一句话目标：
 
 ```text
-LLM message
-  -> tool call
-  -> Swift ToolRegistry
-  -> policy gate
-  -> app-specific Swift/AppleScript/AX action
-  -> evidence-shaped ToolResult
-  -> next LLM message
+AI 长时间、自动驱动 macOS 上的软件完成我的任务。
 ```
 
-### macOS Native Integration References
+## 当前状态
 
-- [Apple Accessibility API](https://developer.apple.com/documentation/applicationservices/axuielement_h): native UI observation and interaction through AXUIElement.
-- [Apple App Sandbox](https://developer.apple.com/documentation/security/app_sandbox): sandbox and entitlement model.
-- [Apple Automation Entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com_apple_security_automation_apple-events): Apple Events automation entitlement.
-- [Apple Endpoint Security](https://developer.apple.com/documentation/endpointsecurity): system event monitoring for security-sensitive integrations.
-- [Apple Service Management](https://developer.apple.com/documentation/servicemanagement): login items and helper service management.
-
-### Automation And Control References
-
-- [Hammerspoon/hammerspoon](https://github.com/Hammerspoon/hammerspoon): powerful macOS automation runtime; useful for prototyping window/app automation.
-- [BlueM/cliclick](https://github.com/BlueM/cliclick): command-line mouse and keyboard automation; useful as fallback input injection reference.
-- [koekeishiya/yabai](https://github.com/koekeishiya/yabai): window management reference; useful for understanding macOS window control tradeoffs.
-- [ianyh/Amethyst](https://github.com/ianyh/Amethyst): open-source macOS window manager reference.
-
-## Architecture
+主线原型在：
 
 ```text
-user goal
-  -> agent planner
-  -> observe current app and macOS state
-  -> select Apple Event, Shortcut, app API, Accessibility action, or input event
-  -> execute action
-  -> observe again
-  -> verify result
-  -> continue, recover, or request user confirmation
+06-prototypes/aios-llm-swift
 ```
 
-### 1. System Runtime
+这是一个 Swift 实现的 macOS computer-use runtime，已经具备：
 
-Runs as a signed native app plus helper services.
+- CLI、菜单栏 host、daemon worker、SwiftUI 控制台、MCP stdio server
+- 长任务队列、checkpoint、resume、scheduled run、LaunchAgent、resident session
+- routine/trigger：定时、文件变化、App 运行、前台 App 等触发条件
+- ToolRegistry：统一工具表，暴露 macOS、浏览器、视觉、App adapter、recipe、memory、runtime 等工具
+- service catalog：把超大的工具表按 Browser、Vision、Runtime、Skills、Recipes、Memory 等服务边界分组
+- Chrome/CDP、Safari/AppleScript、AX、OCR、视觉 grounding、foreground input fallback
+- background driver capsule：为 Figma/Blender/canvas/native non-AX surface 接入外部 CUA-compatible driver 或 app adapter
+- App skill package 机制：内置和本地安装的 App adapter/selector/recipe/entrypoint
+- App verifier contract：按 App/任务类型定义完成条件，而不是只信工具调用成功
+- recipe workflow program：参数、pre/postcondition、fallback、recovery、stability、learn once/reuse
+- learning workflow：用户演示一次，AIOS 抽象成 recipe，绑定 verifier，确认后复用或失败后修补
+- memory/episode/context graph：长期任务上下文、偏好、App/工具/文件/recipe/outcome 关系
+- cockpit/replay：运行历史、事件流、trajectory、dashboard、replay bundle、pause/resume/replan/branch/stop
 
-Possible components:
+当前最关键的边界也已经明确：公开 macOS API 不提供“任意 inactive/offscreen 非 AX 像素面”的万能后台点击。AIOS 对这类界面走 app adapter 或外部 CUA-compatible driver capsule；没有语义通道时才显式 opt-in 到 foreground coordinate action。
 
-- menu bar or background app
-- LaunchAgent for user-session work
-- privileged helper only when strictly needed
-- local agent bridge
-- model provider interface
-- task lifecycle manager
-- audit logger
-- policy engine
+## 项目目录
 
-### 2. Observation Layer
-
-Combines:
-
-- Accessibility API / AXUIElement tree
-- active app and focused window state
-- screenshots with Screen Recording permission
-- OCR and vision models
-- notifications where available
-- clipboard with user-aware policy
-- files and app documents where permissioned
-- app-specific AppleScript, Shortcuts, URL schemes, or local APIs
-
-### 3. Actuation Layer
-
-Action priority:
-
-1. app-native APIs, URL schemes, Shortcuts, and Apple Events
-2. Accessibility semantic actions
-3. menu commands and keyboard shortcuts
-4. screenshot/OCR/vision-driven control
-5. raw coordinate clicking as last resort
-
-### 4. Agent Orchestrator
-
-Turns user goals into reliable execution loops.
-
-Core pieces:
-
-- planner
-- tool selector
-- task state
-- memory
-- verifier
-- UI recovery strategy
-- user handoff when confidence is low
-
-### 5. Permission And Safety
-
-Required controls:
-
-- Accessibility permission explanation and onboarding
-- Screen Recording permission explanation and onboarding
-- Automation permission prompts per target app
-- optional Full Disk Access only for explicitly justified workflows
-- sensitive action confirmations
-- protected handling for passwords, payments, banking, private files, and secure input
-- audit trail
-- emergency stop from a trusted UI surface
-
-## First Phase Goal
-
-The first phase should prove that a trusted macOS app/service can operate across real applications using native macOS observation and execution paths.
-
-### MVP Scope
-
-The first MVP should be intentionally narrow:
-
-- one macOS version range
-- one user account
-- one signed local app or development-signed app
-- no banking, payment, password manager, private-file bulk access, or destructive file operations
-- no autonomous background actions without explicit task request
-- no kernel extension or invasive system modification
-
-Recommended initial target:
-
-- latest stable macOS available to the team
-- Apple Silicon Mac if possible
-- isolated test user account
-- local or remote LLM provider hidden behind a simple model interface
-
-### Phase 1 Deliverables
-
-- native macOS app or agent process
-- LaunchAgent or login-item integration
-- Accessibility permission flow
-- Screen Recording permission flow
-- Apple Events or Shortcuts action executor
-- Accessibility tree reader
-- screenshot/window-state observer
-- observe-act-verify loop
-- audit log for every observation, decision, action, and verification
-- demo workflow across at least two unrelated apps
-
-Current Swift prototype status:
-
-- CLI, menu-bar host, daemon worker, and minimal SwiftUI task console
-- shared `ToolRegistry` for CLI, agent loop, and MCP stdio server
-- locator-based Accessibility driver: context, find, inspect, read, click, type, wait
-- recipe-first execution with recipe suggestions and deterministic recipe execution
-- verified tool-level learning; raw event learning is marked unverified until replayed
-- structured run events, audit log, policy gate, snapshots, OCR, app adapters, and eval cases
-
-### Suggested First Demo
-
-Use safe local applications:
-
-1. Open TextEdit or Notes.
-2. Create a short note.
-3. Save or confirm the note exists.
-4. Open Finder.
-5. Locate or create a test folder.
-6. Open Safari.
-7. Navigate to a local test page.
-8. Return to the original app and verify the note.
-
-This demo is intentionally simple. The important part is whether the AI can observe, act, and verify across apps without relying only on fixed coordinates.
-
-## First Phase Work Breakdown
-
-### Runtime Team
-
-- create a persistent native app or background agent
-- expose local control API for submitting user goals
-- manage model provider configuration
-- own task lifecycle and cancellation
-- write structured logs for every step
-
-### Observation Team
-
-- read active app and focused window
-- inspect Accessibility nodes through AXUIElement
-- capture screen/window state through Screen Recording permission
-- normalize observations into a stable JSON schema
-- mark unavailable or low-confidence observations explicitly
-
-### Actuation Team
-
-- implement Apple Events or Shortcuts actions first
-- implement app URL scheme or app-specific adapters where useful
-- implement Accessibility action execution
-- add keyboard/mouse injection as fallback
-- require the orchestrator to verify after every action
-
-### Orchestrator Team
-
-- translate user goals into small executable steps
-- choose tools based on observation state
-- record expected result for each step
-- call verifier after every action
-- recover or ask for user help when verification fails
-
-### Permission And Safety Team
-
-- define allowed apps and tools for MVP
-- design permission onboarding for Accessibility, Screen Recording, and Automation
-- block sensitive surfaces by default
-- add user confirmation for risky actions
-- implement emergency stop
-- make audit logs easy to inspect
-
-## Core Interfaces
-
-The first implementation should keep module boundaries explicit.
-
-### Observation Schema
-
-```json
-{
-  "session": "macos-user-session-id",
-  "active_app": "TextEdit",
-  "bundle_id": "com.apple.TextEdit",
-  "active_window": "Untitled",
-  "focused_element": {},
-  "accessibility_tree": {},
-  "screen": {
-    "available": true,
-    "source": "screen-recording-permission"
-  },
-  "automation_permissions": {
-    "com.apple.TextEdit": "granted"
-  }
-}
+```text
+.
+├── 00-references/              # 开源参考：Fazm、Ghost OS、CUA、Peekaboo、MacOS-MCP、Codex 等
+├── 01-system-runtime/          # 系统运行层设计占位
+├── 02-observation/             # 观察层设计占位
+├── 03-actuation/               # 控制/执行层设计占位
+├── 04-agent-orchestrator/      # Agent 编排层设计占位
+├── 05-permission-safety/       # 权限/安全层设计占位
+├── 06-prototypes/
+│   └── aios-llm-swift/         # 当前主实现
+├── LICENSE
+└── README.md
 ```
 
-### Action Schema
+`00-references` 用来对照产品形态和系统能力：
 
-```json
-{
-  "type": "accessibility.press",
-  "target": {
-    "element_id": "stable-or-session-element-id",
-    "label": "Save"
-  },
-  "expected_result": "save-dialog-open"
-}
+- `fazm-main`：最接近 Mac AI agent 产品形态，参考 routines/inbox/trigger/UX。
+- `ghost-os-main`：参考“看你做一次，然后变 recipe”的学习闭环。
+- `cua-main`：参考 computer-use driver、trajectory、eval、后台执行。
+- `Peekaboo-main`：参考 macOS capture、visual observation、agent-visible evidence。
+- `MacOS-MCP-main`：参考把 macOS 能力暴露成 MCP tools。
+- `codex-main`：参考 tool registry、事件流、approval/policy、sandbox、长任务编排。
+- `Agent-main`：参考 macOS Accessibility 驱动和本地 agent 实现。
+
+## 核心架构
+
+```text
+User Goal
+  -> Planner
+  -> Durable Queue / Task Graph / Routine / Resident Session
+  -> Tool Selection
+  -> Policy Gate
+  -> App Action
+  -> Observation
+  -> App-Specific Verification
+  -> Recovery / Resume / Learn / Memory
+  -> Delivery
 ```
 
-### Verification Result
+### 1. Runtime
 
-```json
-{
-  "success": true,
-  "evidence": "Save dialog is visible",
-  "next_state": "awaiting-file-name"
-}
+Runtime 负责让任务能长时间存在，而不是只在一次 LLM 对话里跑完。
+
+主要模块：
+
+- `Runtime/RuntimeStores.swift`：run、event、summary、checkpoint、queue、state root。
+- `Runtime/LongRunDaemonStore.swift`：daemon tick，整合 queue、task graph、resident、routine。
+- `Runtime/RoutineStore.swift`：durable routine/trigger。
+- `Runtime/TaskGraphStore.swift`：DAG task graph 和 watcher。
+- `Runtime/ResidentAgentStore.swift`：常驻 session，多次 wake/tick 持续推进。
+- `Host/HostAndDesktopApp.swift`：菜单栏 host、daemon worker、SwiftUI console。
+
+支持的长期形态：
+
+- 立即执行：`aios "<goal>"`
+- 队列执行：`aios submit "<goal>"` + `aios host`
+- daemon tick：`aios daemon tick`
+- 延迟执行：`runtime_pause`、`runtime_schedule`
+- routine/trigger：`routine_create`、`long_task_trigger_create`
+- resident session：`resident_agent_plan`、`resident_agent_tick`
+- task graph watcher：`task_graph_create`、`long_task_watch`
+
+### 2. Observation
+
+Observation 层负责理解当前 macOS 状态。
+
+主要通道：
+
+- AX tree：App、window、focus、role、label、value、action。
+- ScreenCaptureKit / screenshot：窗口或屏幕截图。
+- OCR：读取屏幕/window/image 文字。
+- visual grounding：OCR、AX hint、rectangle、layout、color saliency、sidecar model candidates。
+- Browser/CDP：DOM、selector、iframe、shadow DOM、extract、wait。
+- AppleScript/SDEF/ScriptingBridge：可脚本化 App 的语义状态。
+- 文件系统：Finder、文件元信息、导出物验证。
+- run event stream：历史 action/observation/verification。
+
+相关模块：
+
+- `Vision/VisualGrounding.swift`
+- `Vision/VisualGrounderRuntime.swift`
+- `Vision/VisualPerceptionEngine.swift`
+- `Browser/BrowserRuntimeStore.swift`
+- `Browser/BrowserAgentRuntime.swift`
+- `Trajectory/TrajectoryEvidenceStore.swift`
+
+### 3. Actuation
+
+Actuation 层负责执行动作，优先级从语义到像素：
+
+1. App-native API、URL scheme、Shortcuts、Apple Events
+2. Chrome CDP / DOM / JavaScript
+3. App skill adapter
+4. Accessibility semantic action：AXPress、AXValue
+5. menu command / keyboard shortcut
+6. visual grounding 后的 foreground coordinate action
+7. raw coordinate click/type/drag/scroll，最后手段
+
+相关模块：
+
+- `Control/BackgroundControlKernel.swift`
+- `Control/BackgroundExecutionKernel.swift`
+- `Control/BackgroundDriverBridge.swift`
+- `Control/BackgroundDriverCapsule.swift`
+- `Control/NativeBackgroundDriverKernel.swift`
+- `Tools/ToolRegistry.swift`
+
+对 native non-AX / canvas 面，AIOS 不假装可以用公开 API 完成真后台点击。它会生成 driver capsule request，交给 app adapter 或外部 CUA-compatible driver。
+
+### 4. App Skills
+
+App skill 是高频 App 的能力包：工具、selector、recipe、verifier、adapter entrypoint。
+
+当前内置覆盖：
+
+- Finder
+- Chrome
+- Safari
+- Mail / Calendar
+- TextEdit
+- WeChat
+- Lark / Feishu
+- QQ
+- Notes / Reminders
+- WPS / Office / LibreOffice / Preview
+- Xcode / JetBrains IDE
+- Baidu Netdisk / Tencent Meeting / ToDesk
+- Terminal
+- Figma / Blender / canvas native surfaces
+
+相关工具：
+
+```bash
+aios tool app_skill_list '{}'
+aios tool app_skill_suggest '{"query":"send message in Lark"}'
+aios tool app_skill_core_pack '{"install":false}'
+aios tool app_skill_package_scaffold '{"id":"my-app","app_name":"My App"}'
+aios tool app_skill_route '{"query":"Figma canvas edit","app_name":"Figma"}'
+aios tool app_skill_execute_adapter '{"query":"Figma canvas","action":"observe"}'
 ```
 
-## Development Plan
+相关模块：
 
-### Phase 1: Prove The Loop
+- `Skills/AppSkillsTrajectoryStrategy.swift`
+- `Skills/AppSkillPackageStore.swift`
+- `Skills/AppSkillRuntime.swift`
+- `Skills/AppSkillEcosystemStore.swift`
 
-1. Build a persistent macOS app or background agent.
-2. Request and verify Accessibility permission.
-3. Request and verify Screen Recording permission.
-4. Observe active app, window, and Accessibility tree.
-5. Execute basic actions through Apple Events, Shortcuts, Accessibility, or fallback input.
-6. Verify that the AI can complete multi-step workflows in one desktop session.
+### 5. App-Specific Verification
 
-### Phase 2: Harden The Runtime
+长期自动任务真正可靠，靠的是 App-specific completion contract。
 
-1. Add a tool registry.
-2. Add memory and task state.
-3. Add an audit log.
-4. Add confirmation gates for sensitive actions.
-5. Add recovery behavior when the UI changes unexpectedly.
+例子：
 
-### Phase 3: Expand System Reach
+- 消息是否发到正确的人/群
+- 文件是否真的创建或导出
+- 日历事件是否真的存在
+- 浏览器是否到达目标 URL/selector/text 状态
+- canvas 对象/状态是否能被 adapter 或视觉 anchors 验证
+- 网盘上传是否在目标列表或上传面板里显示完成
 
-1. Add app-specific adapters for Finder, Safari, Notes, Calendar, Mail, and Terminal.
-2. Prefer Apple Events, Shortcuts, and app APIs before visual automation.
-3. Add notification, clipboard, and file-state observation with policy gates.
-4. Improve handling of multiple displays, Spaces, Stage Manager, and full-screen apps.
+相关工具：
 
-### Phase 4: Package As A Trusted Product
+```bash
+aios tool app_verifier_list '{"query":"chat"}'
+aios tool app_verifier_plan '{"app_name":"Lark","effect":"message_sent","target":"Team","value":"weekly update"}'
+aios tool app_verifier_evaluate '{"app_name":"Chrome","effect":"web_state_reached","url":"https://example.com"}'
+```
 
-1. Sign and notarize the app.
-2. Add login item or LaunchAgent behavior.
-3. Add privileged helper only if a specific system operation requires it.
-4. Add MDM/enterprise deployment notes if needed.
+相关模块：
 
-## Directory Map
+- `Skills/AppVerifierStore.swift`
+- `Agent/AgentLoop.swift` 中的 completion gate 和 verified delivery 约束
 
-- `00-references/`: cloned/reference repositories if needed later
-- `01-system-runtime/`: native app, LaunchAgent, helper services, runtime hosting
-- `02-observation/`: Accessibility tree, screenshots, OCR, notifications, clipboard, window state
-- `03-actuation/`: Apple Events, Shortcuts, Accessibility actions, keyboard/mouse fallback
-- `04-agent-orchestrator/`: planner, tool registry, memory, verification loop
-- `05-permission-safety/`: TCC permissions, user confirmation, sandboxing, audit logs
-- `06-prototypes/`: small experiments before committing to architecture
+### 6. Browser Agent
 
-## Real Device Testing
+Chrome/CDP 是当前最深的后台语义通道之一，适合 Web App。
 
-### Test Hardware
+能力：
 
-- one spare Mac or isolated test user account
-- one macOS version matching the target user base
-- one Apple Silicon Mac if available
-- one fast emergency stop path
+- launch isolated Chrome with debugging port
+- tabs/status/eval
+- selector click/type/read
+- observe/act/extract/wait
+- selector cache
+- Stagehand-style browser agent contract
 
-### Minimum System-Level Validation
+相关工具：
 
-- [ ] The AI runs as a persistent app/service, not only as a foreground chat UI.
-- [ ] The AI can observe the active desktop session.
-- [ ] The AI can read Accessibility tree data from at least one GUI app.
-- [ ] The AI can capture screen/window state through Screen Recording permission.
-- [ ] The AI can execute at least one semantic action through Apple Events, Shortcuts, app API, or Accessibility action.
-- [ ] The AI can fall back to keyboard/mouse input only when semantic actions are not available.
-- [ ] The AI re-observes state after each action.
-- [ ] The AI can verify success or detect failure.
-- [ ] The AI can operate across at least two unrelated apps in one workflow.
-- [ ] The AI writes an audit log for observations, decisions, actions, and verification.
+```bash
+aios tool browser_cdp_launch '{}'
+aios tool browser_cdp_observe '{"query":"submit","max_results":10}'
+aios tool browser_cdp_act '{"goal":"submit form","action":"click","query":"Submit"}'
+aios tool browser_agent_contract '{"goal":"fill a web form","url":"https://example.com"}'
+aios tool browser_agent_extract '{"goal":"read table","schema":"rows"}'
+```
 
-### Full System-Level Acceptance
+相关模块：
 
-- [ ] The app or agent starts after login.
-- [ ] The app handles permission denial and permission revocation clearly.
-- [ ] The app handles screen lock and unlock safely.
-- [ ] The app recovers after target app crashes.
-- [ ] The app recovers after window moves, resize events, Spaces changes, and focus changes.
-- [ ] The app respects per-app Automation permissions.
-- [ ] Sensitive actions require explicit user confirmation.
-- [ ] Passwords, payments, banking, secure input, and private data paths are protected.
-- [ ] The user can stop the AI immediately through a reliable emergency stop path.
-- [ ] Logs are complete enough to replay failures.
-- [ ] The same task can run repeatedly without coordinate-specific assumptions.
-- [ ] The app can run in shadow mode for debugging.
-- [ ] The app can be signed, notarized, and installed cleanly.
+- `Browser/BrowserAgentContractStore.swift`
+- `Browser/BrowserAgentRuntime.swift`
+- `Browser/BrowserSelectorCacheStore.swift`
 
-### Test Order
+### 7. Visual Grounding
 
-1. Shadow mode: observe the desktop and log planned actions without executing them.
-2. Safe mode: operate only on harmless apps such as TextEdit, Finder, Safari, Notes, and Terminal.
-3. Session mode: complete multi-step workflows across multiple apps in one login session.
-4. Recovery mode: re-test after window moves, Spaces changes, app crashes, notifications, and logout/login.
-5. Persistence mode: verify the agent starts after login and still behaves correctly.
+视觉 grounding 负责处理图标、canvas、图片按钮、复杂布局和非文本区域。
 
-### What To Measure
+当前动作闭环：
 
-- whether the AI can identify the correct app, window, and UI element
-- whether the action succeeded without manual correction
-- whether the verification step catches mismatches
-- whether permission prompts and failures are understandable
-- whether logs are complete enough to replay failures
+- observe
+- verify
+- click
+- type
+- hover
+- drag
+- scroll
+- long_press
+- post_verify
 
-## Development Notes
+可接模型：
 
-macOS is the fastest desktop path for a polished prototype, but it is not an open OS in the same way Linux and Android are. Treat TCC, Accessibility, Screen Recording, Automation prompts, code signing, and notarization as core platform features rather than afterthoughts.
+- 内置 heuristic grounder：OCR + AX + rectangles + layout + color saliency
+- OpenAI-compatible vision sidecar：`AIOS_VISION_BASE_URL` / `AIOS_VISION_MODEL`
+- local ShowUI / UI-TARS / GUI grounder adapter：`AIOS_LOCAL_GROUNDER_COMMAND`
 
-## Key Risks
+相关工具：
 
-- Accessibility trees may be incomplete or inconsistent across apps.
-- TCC permissions can be revoked or denied by the user.
-- Screen Recording and Automation permissions require clear onboarding.
-- Secure input can block keyboard observation and should be respected.
-- Coordinate-based actions are fragile and should not become the default path.
-- App Store sandboxing may conflict with broad automation goals.
+```bash
+aios tool visual_ground_schema '{}'
+aios tool visual_grounder_profiles '{}'
+aios tool visual_grounder_run '{"surface":"canvas","query":"play button"}'
+aios tool visual_ground_action '{"query":"play","action":"click","execute":false}'
+aios tool visual_grounder_verify '{"query":"success state"}'
+aios tool visual_grounder_feedback '{"candidate_id":"M1","success":true}'
+```
 
-## Done Criteria For Phase 1
+相关模块：
 
-Phase 1 is done only when all of the following are true:
+- `Vision/VisualGrounding.swift`
+- `Vision/VisualGrounderRuntime.swift`
+- `Vision/VisualGroundingQualityStore.swift`
 
-- the app or agent can start and stop cleanly
-- required permissions are requested and detected correctly
-- the agent can observe at least two unrelated GUI apps
-- the agent can complete one multi-app task
-- each action is followed by a verification step
-- failures are logged with enough context to replay the issue
-- a user can stop execution immediately
-- no kernel extension or invasive system modification is required
+### 8. Recipes And Learning
+
+Recipe 是可复用的 workflow program，不只是 prompt template。
+
+Recipe 支持：
+
+- 参数化
+- precondition / postcondition
+- verify tool / verify expression
+- retries
+- fallback tools
+- recovery steps
+- branch / loop
+- stability score
+- run outcome tracking
+- promote / compile / refine / repair
+
+Learning workflow 把 Ghost OS 式“看你做一次”产品化：
+
+```text
+start learning
+  -> user demonstrates
+  -> record tool steps or raw events
+  -> synthesize recipe
+  -> generalize parameters
+  -> attach verifier plan
+  -> user confirms
+  -> future tasks select/reuse
+  -> failures produce repair hints
+```
+
+相关工具：
+
+```bash
+aios tool learn_workflow_plan '{"goal":"send weekly report in Lark","app_name":"Lark","verifier_effect":"message_sent"}'
+aios tool learn_workflow_start '{"title":"weekly lark report","goal":"send weekly report"}'
+aios learn record wechat_stage_file '{"recipient":"Example Contact","path":"~/Downloads/example.docx"}'
+aios learn stop send-file-learned
+aios tool learn_workflow_finalize '{"recipe_id":"send-file-learned","verifier_effect":"message_sent"}'
+aios tool recipe_program_select '{"goal":"send file to contact"}'
+```
+
+相关模块：
+
+- `Learning/Learning.swift`
+- `Learning/LearningWorkflowStore.swift`
+- `Recipes/RecipeLearningEngine.swift`
+- `Recipes/RecipeProgramStore.swift`
+- `Recipes/RecipeAdaptationStore.swift`
+- `Recipes/RecipeStabilityStore.swift`
+
+### 9. Memory, Episode, Context Graph
+
+Memory 层让长任务不是“每次重新认识世界”。
+
+它记录：
+
+- 可复用 workflow hint
+- 成功/失败 episode
+- App、工具、文件、recipe、目标、结果之间的图关系
+- 用户偏好和任务上下文
+- Shadow-style digest/context pack
+
+相关工具：
+
+```bash
+aios tool memory_remember '{"kind":"workflow_hint","key":"TextEdit input","value":"Use AXValue first."}'
+aios tool memory_semantic_recall '{"query":"Chrome web automation"}'
+aios tool memory_context_pack '{"query":"long browser workflow"}'
+aios tool shadow_episode_policy '{"goal":"watch a download and summarize it"}'
+aios tool memory_shadow_capture '{"goal":"paused long task","trigger":"pause"}'
+```
+
+相关模块：
+
+- `Memory/MemoryStores.swift`
+- `Memory/MemoryIndexStore.swift`
+- `Memory/EpisodeContextEngine.swift`
+- `Memory/LongMemoryEngine.swift`
+- `Memory/ShadowMemoryStore.swift`
+
+### 10. Cockpit, Replay, Product Entry
+
+Cockpit 是“我的 Mac AI 执行层”的操作面板。
+
+当前入口：
+
+- `aios app`：SwiftUI 控制台
+- `aios host`：菜单栏 host，自动 drain queue
+- `aios daemon`：无 UI daemon worker
+- `aios launch-agent install`：登录后常驻
+- MCP：`aios mcp`
+
+Cockpit 现在能看到：
+
+- runs / queue / task graphs
+- resident sessions
+- routines / triggers
+- learning workflows
+- verifier contracts
+- dashboard
+- checkpoint
+- trajectory / replay plan
+- background driver receipts
+- memory / app skills / artifacts
+- pause / resume / feedback / replan / branch / stop / tick daemon
+
+相关模块：
+
+- `Platform/CockpitDashboardStore.swift`
+- `Platform/CockpitControlStore.swift`
+- `Platform/SessionProtocolStore.swift`
+- `Trajectory/ReplayableSessionBundleStore.swift`
+- `Trajectory/TrajectoryReplayEngine.swift`
+
+## 快速开始
+
+```bash
+cd 06-prototypes/aios-llm-swift
+swift build
+```
+
+在这个 Codex workspace 中，SwiftPM 有时需要：
+
+```bash
+swift run --disable-sandbox aios doctor
+```
+
+配置 OpenAI-compatible 模型：
+
+```bash
+export AIOS_LLM_BASE_URL="https://api.example.com/v1"
+export AIOS_LLM_MODEL="example-chat-model"
+export AIOS_LLM_API_KEY="replace-with-your-local-key"
+export AIOS_MAX_STEPS="20"
+```
+
+可选视觉模型：
+
+```bash
+export AIOS_VISION_BASE_URL="https://vision-compatible.example.com/v1"
+export AIOS_VISION_MODEL="example-vision-model"
+export AIOS_VISION_API_KEY="replace-with-your-local-key"
+```
+
+运行：
+
+```bash
+swift run --disable-sandbox aios app
+swift run --disable-sandbox aios host
+swift run --disable-sandbox aios daemon
+swift run --disable-sandbox aios submit "在 TextEdit 写一段项目说明，保存到桌面，并用 Finder 验证"
+swift run --disable-sandbox aios runs
+swift run --disable-sandbox aios show <run_id>
+swift run --disable-sandbox aios resume <run_id>
+```
+
+MCP server：
+
+```bash
+swift run --disable-sandbox aios mcp
+```
+
+工具调用：
+
+```bash
+swift run --disable-sandbox aios tool long_agent_capability_matrix '{"goal":"AI长时间自动驱动mac上的软件完成任务"}'
+swift run --disable-sandbox aios tool tool_service_catalog '{}'
+swift run --disable-sandbox aios tool cockpit_dashboard '{"limit":5}'
+swift run --disable-sandbox aios tool routine_list '{}'
+swift run --disable-sandbox aios tool app_verifier_list '{"limit":5}'
+```
+
+本地测试状态目录：
+
+```bash
+AIOS_STATE_DIR=$PWD/.aios-state swift run --disable-sandbox aios tool routine_list '{}'
+```
+
+## 状态目录
+
+默认状态目录：
+
+```text
+~/Library/Application Support/AIOS
+```
+
+主要内容：
+
+```text
+queue/*.json                         # 待执行任务
+runs/<run_id>/events.jsonl           # 事件流
+runs/<run_id>/summary.json           # run 摘要
+runs/<run_id>/checkpoint.json        # 可恢复 checkpoint
+runs.sqlite                          # run 索引
+routines.json                        # durable routines/triggers
+resident-agent-sessions.json         # resident sessions
+task-graphs.json                     # task graphs
+recipes/*.json                       # recipes / workflow programs
+recipes/learning-records.jsonl       # recipe learning records
+learning/workflow-records.json       # learning workflows
+learning/raw/*.json                  # raw CGEvent traces
+memory/*.jsonl                       # memory / semantic index
+episodes/*.json                      # task episodes
+context-graph/*.json                 # graph nodes/edges
+app-skills/*.json                    # installed app skill manifests
+app-skills/packages/*                # app skill packages
+vision-ui-maps/*                     # visual UI map cache
+background-driver-receipts.jsonl     # driver capsule receipts
+trajectories/*                       # replay/session artifacts
+evals/*                              # eval result/cases
+audit.jsonl                          # tool-call audit log
+```
+
+## 常用命令
+
+```bash
+# 健康检查
+swift run --disable-sandbox aios doctor
+swift run --disable-sandbox aios doctor --request-permissions
+
+# 后台运行
+swift run --disable-sandbox aios host
+swift run --disable-sandbox aios daemon
+swift run --disable-sandbox aios daemon tick
+swift run --disable-sandbox aios launch-agent install
+swift run --disable-sandbox aios launch-agent status
+
+# 任务
+swift run --disable-sandbox aios submit "整理下载目录并给出摘要"
+swift run --disable-sandbox aios runs
+swift run --disable-sandbox aios show <run_id>
+swift run --disable-sandbox aios resume <run_id>
+swift run --disable-sandbox aios cancel <run_id>
+
+# Routine / trigger
+swift run --disable-sandbox aios tool routine_create '{"name":"daily summary","goal":"总结今天的新文件","schedule":"daily:18:00"}'
+swift run --disable-sandbox aios tool long_task_trigger_create '{"goal":"看到报告文件后总结","trigger_kind":"file_exists","trigger_value":"~/Downloads/report.pdf"}'
+swift run --disable-sandbox aios tool routine_tick '{}'
+
+# App skill / verifier
+swift run --disable-sandbox aios tool app_skill_core_pack '{"install":false}'
+swift run --disable-sandbox aios tool app_verifier_plan '{"app_name":"Lark","effect":"message_sent","target":"Team","value":"weekly update"}'
+
+# Visual / background driver
+swift run --disable-sandbox aios tool background_driver_capsule '{}'
+swift run --disable-sandbox aios tool background_driver_dispatch '{"app_name":"Figma","surface":"canvas","action":"click","query":"play","dry_run":true}'
+swift run --disable-sandbox aios tool visual_ground_action '{"query":"submit","action":"click","execute":false}'
+
+# Learning / recipe
+swift run --disable-sandbox aios tool learn_workflow_plan '{"goal":"send weekly report in Lark","app_name":"Lark","verifier_effect":"message_sent"}'
+swift run --disable-sandbox aios recipe list
+swift run --disable-sandbox aios recipe suggest "把文档导出 PDF"
+swift run --disable-sandbox aios eval run
+```
+
+## Tool Service Map
+
+`ToolRegistry.swift` 仍然是 model-visible schema 的集中入口，但服务边界已经单独建模：
+
+```text
+Tools/ToolServiceCatalog.swift
+```
+
+主要服务：
+
+- `background-control`：后台驱动、driver capsule、control kernel
+- `vision-grounding`：OCR、screenshot、visual candidates/action/verify
+- `browser-agent`：Chrome CDP、Safari、Stagehand-style browser runtime
+- `resident-runtime`：long run、routine、task graph、resident session
+- `cockpit`：dashboard、session、trajectory、replay
+- `app-skills`：App skill package、adapter、verifier contract
+- `native-app-adapters`：Finder、Mail、Calendar、WeChat、Lark、QQ、Office、IDE、网盘等
+- `recipes-learning`：recipe、learning workflow、stability/repair
+- `memory`：memory、episode、context graph、shadow digest
+
+查看服务分组：
+
+```bash
+swift run --disable-sandbox aios tool tool_service_catalog '{}'
+swift run --disable-sandbox aios tool tool_service_catalog '{"tool":"app_verifier_plan"}'
+```
+
+## 当前可证明能力
+
+已经能证明的主线能力：
+
+- 用 AX/AppleScript/CDP/visual fallback 操作真实 macOS App
+- 对 Chrome Web App 做无光标、无焦点的 DOM 控制
+- 对消息类 App 执行搜索、打开、发送、近期消息验证
+- 对 Finder、TextEdit、Mail、Calendar、Notes、Reminders、Office/LibreOffice/Preview、IDE 等做第一批 adapter
+- 用 verifier contract 把“完成”定义到 App 语义层
+- 记录完整 run events，并从中导出 trajectory/replay/session
+- 长任务 checkpoint/resume/schedule/daemon tick
+- routine/trigger 驱动多次 wake/tick
+- 将一次成功轨迹或用户演示提升为 recipe program
+- 维护长期 memory、episode、context graph
+- 将能力通过 MCP 暴露给外部 agent
+
+## 仍需继续加厚的方向
+
+不是“有没有框架”，而是“覆盖厚度和真实 App 成功率”：
+
+- 为 Figma、Blender、Electron/canvas 非 AX 区域补真实 app adapter 或接入外部 CUA driver。
+- 为高频 App 继续加 selectors、recipes、verifiers、fallback，而不是只有 open/send。
+- 把 learning workflow 做进 UI：开始学习、录制、抽参数、确认、复用、失败修补。
+- 接入默认可用的 GUI grounding 模型，让 ShowUI/UI-TARS/OmniParser 类能力开箱可接。
+- 把 ToolRegistry 的执行实现继续拆到 BrowserService、AXService、InputService、RecipeService、MemoryService、AppAdapterService、DriverService。
+- 把 cockpit 做成更贴近日常使用的 floating control bar、任务历史、例行任务面板、实时状态和远程触发入口。
+
+## 设计原则
+
+- 语义通道优先，坐标最后。
+- 每个动作都要有 observation 和 verification。
+- 长任务必须可暂停、可恢复、可审计、可 replay。
+- 成功经验要沉淀成 recipe、memory、app skill，而不是下次重来。
+- App-specific verifier 是可靠性的核心，不把“工具调用成功”等同于“任务完成”。
+- 对 macOS 真实边界保持诚实：TCC、Secure Input、sandbox、DRM、支付/密码/银行等保护不能绕过。
+
+## 许可证
+
+见 [LICENSE](LICENSE)。

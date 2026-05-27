@@ -161,7 +161,7 @@ struct TaskGraphStore {
                     graph.nodes[index] = node
                     continue
                 }
-                guard node.status == "pending" || node.status == "waiting" else { continue }
+                guard node.status == "pending" || node.status == "waiting" || node.status == "queued" else { continue }
                 guard Set(node.dependsOn).isSubset(of: completedIDs) else {
                     result.waiting.append(node.id)
                     continue

@@ -63,7 +63,7 @@ struct AgentRoleSystem {
             id: "executor",
             title: "Executor",
             mission: "Execute one bounded step through the deepest non-invasive channel and return structured evidence.",
-            tools: ["background_native_kernel", "background_driver_probe", "background_driver_dispatch", "background_action", "background_kernel_plan", "aios_find", "aios_read", "visual_ground_action"],
+            tools: ["background_native_kernel", "background_driver_probe", "background_driver_capsule", "background_driver_dispatch", "background_action", "background_kernel_plan", "aios_find", "aios_read", "visual_ground_action"],
             inputs: ["step", "target", "constraints"],
             outputs: ["tool_result", "evidence", "recovery_hint"],
             handoffs: ["perception_grounder", "verifier", "runtime_operator"]
@@ -72,7 +72,7 @@ struct AgentRoleSystem {
             id: "perception_grounder",
             title: "Perception Grounder",
             mission: "Convert screenshots/windows/images into UI candidates, action points, and verification anchors.",
-            tools: ["visual_grounder_model_registry", "visual_grounder_policy", "visual_grounder_calibrate", "visual_grounder_feedback", "visual_candidates", "visual_ground", "visual_grounder_run", "visual_ground_action", "visual_analyze", "screen_capture_window_sck"],
+            tools: ["visual_grounder_model_registry", "visual_grounder_policy", "visual_grounder_calibrate", "visual_grounder_feedback", "visual_grounder_verify", "visual_candidates", "visual_ground", "visual_grounder_run", "visual_ground_action", "visual_analyze", "screen_capture_window_sck"],
             inputs: ["image", "query", "target_surface"],
             outputs: ["grounding_candidates", "action_plan", "verification_anchors"],
             handoffs: ["executor", "verifier"]
@@ -108,7 +108,7 @@ struct AgentRoleSystem {
             id: "app_skill_specialist",
             title: "App Skill Specialist",
             mission: "Resolve, validate, and apply app-specific adapters, selectors, recipes, and compatibility metadata.",
-            tools: ["app_skill_route", "app_skill_core_pack", "app_skill_sdk", "app_skill_package_validate", "app_skill_package_list", "app_skill_export_manifest"],
+            tools: ["app_skill_route", "app_skill_execute_adapter", "app_skill_core_pack", "app_skill_sdk", "app_skill_package_validate", "app_skill_package_list", "app_skill_export_manifest"],
             inputs: ["app", "goal", "target_version"],
             outputs: ["skill_route", "selector_plan", "recipe_candidates"],
             handoffs: ["executor", "recipe_runner"]

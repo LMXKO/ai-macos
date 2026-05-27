@@ -15,7 +15,7 @@ struct VisualGrounding {
             ["field": "score", "meaning": "0-1 ranking score for the query/action."],
             ["field": "confidence", "meaning": "Detector confidence when available."],
             ["field": "affordance", "meaning": "button, text_input, link, toggle, menu, readable_text, layout_region, status_region, or visual_region."],
-            ["field": "action_types", "meaning": "Comma-separated actions that can plausibly use this candidate, e.g. click,type,verify,observe."],
+            ["field": "action_types", "meaning": "Comma-separated actions that can plausibly use this candidate, e.g. click,type,verify,observe,hover,drag,scroll."],
             ["field": "state", "meaning": "Optional visual state inferred from color/role, e.g. primary, success, warning, danger, disabled."],
             ["field": "dominant_color", "meaning": "Optional #RRGGBB color used for state or saliency inference."]
         ]
@@ -23,11 +23,13 @@ struct VisualGrounding {
 
     static var actionSchema: [[String: String]] {
         [
-            ["field": "action", "meaning": "click, type, verify, observe, drag, or hover."],
+            ["field": "action", "meaning": "click, type, verify, observe, drag, hover, scroll, or long_press."],
             ["field": "candidate_id", "meaning": "Selected candidate id."],
             ["field": "channel", "meaning": "visual_grounding; execution may require foreground coordinates."],
             ["field": "requires_foreground", "meaning": "true for coordinate actions, false for verify/observe planning."],
             ["field": "x,y", "meaning": "Action point, usually candidate center."],
+            ["field": "to_x,to_y", "meaning": "Optional destination point for drag."],
+            ["field": "direction,amount,duration", "meaning": "Optional gesture parameters for scroll, drag, and long_press."],
             ["field": "text", "meaning": "Text to type when action=type."],
             ["field": "reason", "meaning": "Why this candidate was selected."]
         ]
@@ -119,7 +121,7 @@ struct VisualGrounding {
             "candidate_id": selected["id"] ?? "",
             "candidate": jsonStringValue(selected),
             "channel": "visual_grounding",
-            "requires_foreground": ["click", "type", "drag", "hover"].contains(normalizedAction) ? "true" : "false",
+            "requires_foreground": ["click", "type", "drag", "hover", "scroll", "long press", "long_press"].contains(normalizedAction) ? "true" : "false",
             "reason": reason(for: selected, query: query, action: normalizedAction)
         ]
         if let x = selected["center_x"], let y = selected["center_y"] {
@@ -229,13 +231,13 @@ struct VisualGrounding {
     private static func actionTypes(for candidate: [String: String]) -> [String] {
         switch candidate["affordance"] ?? affordance(for: candidate) {
         case "text_input":
-            return ["click", "type", "verify", "observe"]
+            return ["click", "type", "verify", "observe", "hover"]
         case "button", "link", "toggle", "menu":
-            return ["click", "verify", "observe"]
+            return ["click", "verify", "observe", "hover"]
         case "readable_text", "status_region", "layout_region":
-            return ["verify", "observe"]
+            return ["verify", "observe", "hover", "scroll", "drag"]
         default:
-            return ["click", "verify", "observe"]
+            return ["click", "verify", "observe", "hover", "drag"]
         }
     }
 

@@ -86,8 +86,14 @@ struct AppSkillPackageStore {
         recipes: [String] = [],
         selectors: [String: String] = [:],
         permissions: [String] = [],
+        entrypoints: [String: String] = [:],
         notes: String = ""
     ) throws -> AppSkillPackage {
+        let packageEntrypoints = [
+            "manifest": "skill-package.json",
+            "selectors": "selectors.json",
+            "recipes": "recipes/"
+        ].merging(entrypoints) { _, new in new }
         let package = AppSkillPackage(
             schema: schema,
             id: normalizeID(id),
@@ -104,26 +110,43 @@ struct AppSkillPackageStore {
                 "macos": "14+",
                 "driver": "app_adapter_or_ax"
             ],
-            entrypoints: [
-                "manifest": "skill-package.json",
-                "selectors": "selectors.json",
-                "recipes": "recipes/"
-            ],
+            entrypoints: packageEntrypoints,
             notes: notes
         )
         let dir = packageURL(id: package.id)
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("recipes", isDirectory: true), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("docs", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("adapters", isDirectory: true), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(package).write(to: dir.appendingPathComponent("skill-package.json"), options: [.atomic])
         try writeJSONObject(selectors, to: dir.appendingPathComponent("selectors.json"))
+        if let adapter = packageEntrypoints["adapter"], !adapter.isEmpty {
+            let adapterURL = dir.appendingPathComponent(adapter)
+            if !FileManager.default.fileExists(atPath: adapterURL.path) {
+                try FileManager.default.createDirectory(at: adapterURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let template = """
+                #!/bin/sh
+                # AIOS app skill adapter template. Read JSON from stdin and print a JSON object.
+                payload=$(cat)
+                printf '{"success":true,"evidence":"adapter template received request","payload":%s}\\n' "$payload"
+                """
+                try template.write(to: adapterURL, atomically: true, encoding: .utf8)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: adapterURL.path)
+            }
+        }
         let readme = """
         # \(appName) AIOS Skill Package
 
         Schema: \(schema)
 
         Add recipes under `recipes/*.json`, selectors in `selectors.json`, and keep tool/capability declarations in `skill-package.json`.
+
+        Optional executable adapters live under `adapters/` and receive an AIOS JSON payload on stdin:
+
+        - `action`: observe, ground, act, verify, wait, click, type, or app-specific verbs
+        - `query`, `selector`, `text`, `target`, and `context`
+        - stdout should be a JSON object with `success`, `evidence`, and optional data fields
         """
         try readme.write(to: dir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         return package
@@ -203,6 +226,10 @@ struct AppSkillPackageStore {
         }
         if !FileManager.default.fileExists(atPath: dir.appendingPathComponent("recipes", isDirectory: true).path) {
             issues.append("recipes directory missing")
+        }
+        if let adapter = package.entrypoints["adapter"], !adapter.isEmpty,
+           !FileManager.default.fileExists(atPath: dir.appendingPathComponent(adapter).path) {
+            issues.append("adapter entrypoint missing: \(adapter)")
         }
         return issues
     }

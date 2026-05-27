@@ -4,14 +4,15 @@ struct AppSkillEcosystemStore {
     static func sdkSpec() -> [String: String] {
         let manifestFields = [
             "id", "app_name", "bundle_id", "version", "capabilities", "tools",
-            "recipes", "selectors", "permissions", "notes", "compatibility"
+            "recipes", "selectors", "permissions", "entrypoints", "notes", "compatibility"
         ]
         return [
             "schema": "aios.app_skill.sdk.v1",
             "package_root": AppSkillPackageStore.packagesURL.path,
             "manifest_fields": manifestFields.joined(separator: ","),
-            "required_files": "manifest.json,selectors.json,recipes/,README.md",
-            "adapter_contract": "declare capabilities -> expose tool names -> bundle selectors/recipes -> validate against ToolRegistry -> route by app/task",
+            "required_files": "skill-package.json,selectors.json,recipes/,README.md,optional adapters/",
+            "adapter_contract": "declare capabilities -> expose tool names -> bundle selectors/recipes -> optional executable adapter receives JSON on stdin and returns JSON evidence -> validate against ToolRegistry -> route by app/task",
+            "verifier_contract": "declare postconditions with app_verifier_*: effect, required inputs, verifier tools, evidence fields, fallback channels, and completion rule",
             "versioning": "semver recommended; compatibility can pin bundle_id, app version, OS version, and required driver channels",
             "distribution": "portable package directory or exported manifest JSON"
         ]
@@ -50,6 +51,7 @@ struct AppSkillEcosystemStore {
             "schema": "aios.app_skill.marketplace.v1",
             "query": query,
             "skills": jsonStringValue(Array(rows)),
+            "verifier_contracts": jsonStringValue(AppVerifierStore.list(query: query, limit: limit).map(\.dictionary)),
             "sdk": jsonStringValue(sdkSpec())
         ]
     }

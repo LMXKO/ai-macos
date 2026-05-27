@@ -13,6 +13,10 @@ struct LongRunDaemonState: Codable {
     let runningRuns: [String]?
     let pausedRuns: [String]?
     let failedRuns: [String]?
+    let residentSessions: [String]?
+    let residentTicks: [String]?
+    let routineJobs: [String]?
+    let routineFires: [String]?
     let nextWakeAt: String?
 
     var dictionary: [String: String] {
@@ -29,6 +33,10 @@ struct LongRunDaemonState: Codable {
             "running_runs": (runningRuns ?? []).joined(separator: ","),
             "paused_runs": (pausedRuns ?? []).joined(separator: ","),
             "failed_runs": (failedRuns ?? []).joined(separator: ","),
+            "resident_sessions": (residentSessions ?? []).joined(separator: ","),
+            "resident_ticks": (residentTicks ?? []).joined(separator: ","),
+            "routine_jobs": (routineJobs ?? []).joined(separator: ","),
+            "routine_fires": (routineFires ?? []).joined(separator: ","),
             "next_wake_at": nextWakeAt ?? ""
         ]
     }
@@ -43,7 +51,7 @@ struct LongRunDaemonStore {
         guard let data = try? Data(contentsOf: stateURL),
               let state = try? JSONDecoder().decode(LongRunDaemonState.self, from: data)
         else {
-            return LongRunDaemonState(id: "default", status: "idle", tickCount: 0, lastTickAt: "", queuedRuns: [], readyRuns: [], scheduledRuns: [], completedRuns: [], waitingGraphs: [], runningRuns: [], pausedRuns: [], failedRuns: [], nextWakeAt: nil)
+            return LongRunDaemonState(id: "default", status: "idle", tickCount: 0, lastTickAt: "", queuedRuns: [], readyRuns: [], scheduledRuns: [], completedRuns: [], waitingGraphs: [], runningRuns: [], pausedRuns: [], failedRuns: [], residentSessions: [], residentTicks: [], routineJobs: [], routineFires: [], nextWakeAt: nil)
         }
         return state
     }
@@ -51,6 +59,8 @@ struct LongRunDaemonStore {
     @discardableResult
     static func tick() throws -> LongRunDaemonState {
         let previous = status()
+        let residentTicks = (try? ResidentAgentStore.tickDueSessions()) ?? []
+        let routineFires = (try? RoutineStore.tick()) ?? []
         let graphTicks = try TaskGraphStore.tick()
         let queue = TaskQueue.list()
         let ready = queue.filter(\.ready).map(\.id)
@@ -64,13 +74,17 @@ struct LongRunDaemonStore {
         let waiting = TaskGraphStore.list().filter { graph in
             graph.nodes.contains { $0.status == "waiting" || $0.status == "queued" || $0.status == "running" }
         }.map(\.id)
+        let residentStatus = ResidentAgentStore.status(limit: 50)
+        let residentIDs = parseResidentSessionIDs(residentStatus["sessions"] ?? "[]")
+        let routines = RoutineStore.list().filter(\.enabled)
         let wakeCandidates = queue.compactMap(\.notBefore).filter { value in
             guard let date = isoDate(from: value) else { return false }
             return date > Date()
-        }.sorted()
+        } + parseResidentNextWakeValues(residentStatus["sessions"] ?? "[]") + RoutineStore.nextWakeValues()
+        let sortedWakeCandidates = wakeCandidates.sorted()
         let state = LongRunDaemonState(
             id: "default",
-            status: waiting.isEmpty && scheduled.isEmpty && ready.isEmpty && running.isEmpty ? "idle" : "active",
+            status: waiting.isEmpty && scheduled.isEmpty && ready.isEmpty && running.isEmpty && residentIDs.isEmpty && routines.isEmpty ? "idle" : "active",
             tickCount: previous.tickCount + 1,
             lastTickAt: isoDateString(Date()),
             queuedRuns: queue.map(\.id),
@@ -81,7 +95,16 @@ struct LongRunDaemonStore {
             runningRuns: Array(running),
             pausedRuns: Array(paused),
             failedRuns: Array(failed),
-            nextWakeAt: wakeCandidates.first
+            residentSessions: residentIDs,
+            residentTicks: residentTicks.compactMap { row in
+                guard let raw = row["session"], let data = raw.data(using: .utf8),
+                      let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { return row["status"] }
+                return string(decoded["id"]) ?? row["status"]
+            },
+            routineJobs: routines.map(\.id),
+            routineFires: routineFires.map(\.runID),
+            nextWakeAt: sortedWakeCandidates.first
         )
         try write(state)
         return state
@@ -98,5 +121,30 @@ struct LongRunDaemonStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(state).write(to: stateURL, options: [.atomic])
+    }
+
+    private static func parseResidentSessionIDs(_ sessionsJSON: String) -> [String] {
+        guard let data = sessionsJSON.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return rows.compactMap { row in
+            let status = string(row["status"]) ?? ""
+            guard status != "complete", status != "canceled" else { return nil }
+            return string(row["id"])
+        }
+    }
+
+    private static func parseResidentNextWakeValues(_ sessionsJSON: String) -> [String] {
+        guard let data = sessionsJSON.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return rows.compactMap { row in
+            guard let value = string(row["next_wake_at"]),
+                  !value.isEmpty,
+                  let date = isoDate(from: value),
+                  date > Date()
+            else { return nil }
+            return value
+        }
     }
 }

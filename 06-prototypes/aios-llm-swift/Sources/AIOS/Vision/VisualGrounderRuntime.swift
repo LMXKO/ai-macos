@@ -93,6 +93,59 @@ struct VisualGrounderRuntime {
         ]
     }
 
+    static func verify(args: [String: Any]) -> [String: String] {
+        let query = string(args["query"]) ?? ""
+        let candidateID = string(args["candidate_id"]) ?? ""
+        let imagePath = string(args["image_path"]) ?? ""
+        let surface = string(args["surface"]) ?? ""
+        let maps = VisualPerceptionEngine.recent(limit: int(args["limit"]) ?? 12)
+        let normalizedQuery = normalizeForSearch(query)
+        let candidates = maps.flatMap { map -> [[String: String]] in
+            guard imagePath.isEmpty || map["image_path"] == imagePath else { return [] }
+            return parseCandidates(map["candidates"] ?? "[]").map { candidate in
+                var enriched = candidate
+                enriched["ui_map_id"] = map["id"] ?? ""
+                enriched["ui_map_created_at"] = map["created_at"] ?? ""
+                enriched["ui_map_image_path"] = map["image_path"] ?? ""
+                return enriched
+            }
+        }
+        let scored = candidates.map { candidate -> ([String: String], Double) in
+            let label = normalizeForSearch([
+                candidate["id"],
+                candidate["label"],
+                candidate["text"],
+                candidate["role"],
+                candidate["kind"],
+                candidate["source"]
+            ].compactMap { $0 }.joined(separator: " "))
+            var score = Double(candidate["score"] ?? "") ?? Double(candidate["confidence"] ?? "") ?? 0.25
+            if !candidateID.isEmpty, candidate["id"] == candidateID { score += 2.0 }
+            if !normalizedQuery.isEmpty, label.contains(normalizedQuery) { score += 1.0 }
+            for token in normalizedQuery.split(separator: " ") where label.contains(token) {
+                score += 0.12
+            }
+            return (candidate, score)
+        }
+        .sorted { lhs, rhs in lhs.1 > rhs.1 }
+        let best = scored.first
+        let threshold = candidateID.isEmpty ? 0.45 : 1.5
+        let verified = (best?.1 ?? 0) >= threshold
+        return [
+            "schema": "aios.visual.grounder.verify.v1",
+            "surface": surface,
+            "query": query,
+            "candidate_id": candidateID,
+            "image_path": imagePath,
+            "verified": verified ? "true" : "false",
+            "best_score": best.map { String(format: "%.3f", $0.1) } ?? "0",
+            "best_candidate": best.map { jsonStringValue($0.0) } ?? "",
+            "checked_candidates": "\(candidates.count)",
+            "anchors": best.map { anchorSummary(candidate: $0.0) } ?? "",
+            "policy": "verify against latest UI map candidates; exact candidate_id wins, query/text/role/shape anchors provide fallback evidence"
+        ]
+    }
+
     static func run(args: [String: Any]) throws -> [String: String] {
         let imagePath = string(args["image_path"]) ?? ""
         let query = string(args["query"]) ?? ""
@@ -141,6 +194,32 @@ struct VisualGrounderRuntime {
     private static func configuredLocalGrounder() -> String {
         let env = ProcessInfo.processInfo.environment
         return env["AIOS_LOCAL_GROUNDER_MODEL"] ?? env["AIOS_GUI_GROUNDER_MODEL"] ?? ""
+    }
+
+    private static func parseCandidates(_ text: String) -> [[String: String]] {
+        guard let data = text.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return rows.map { row in
+            row.reduce(into: [String: String]()) { result, pair in
+                if let value = pair.value as? String {
+                    result[pair.key] = value
+                } else if let value = pair.value as? NSNumber {
+                    result[pair.key] = value.stringValue
+                }
+            }
+        }
+    }
+
+    private static func anchorSummary(candidate: [String: String]) -> String {
+        [
+            "id=\(candidate["id"] ?? "")",
+            "label=\(candidate["label"] ?? candidate["text"] ?? "")",
+            "kind=\(candidate["kind"] ?? "")",
+            "source=\(candidate["source"] ?? "")",
+            "bounds=\(candidate["x"] ?? ""),\(candidate["y"] ?? ""),\(candidate["width"] ?? ""),\(candidate["height"] ?? "")",
+            "image=\(candidate["ui_map_image_path"] ?? candidate["image_path"] ?? "")"
+        ].joined(separator: ";")
     }
 
     private static func configuredLocalGrounderCommand() -> String? {

@@ -94,6 +94,9 @@ final class AIOSHost: NSObject, NSApplicationDelegate {
         statusItem?.button?.title = "AIOS"
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "AIOS Host Running", action: nil, keyEquivalent: ""))
+        let tickItem = NSMenuItem(title: "Tick Daemon Now", action: #selector(tickDaemonNow), keyEquivalent: "t")
+        tickItem.target = self
+        menu.addItem(tickItem)
         let openState = NSMenuItem(title: "Open State Folder", action: #selector(openStateFolder), keyEquivalent: "o")
         openState.target = self
         menu.addItem(openState)
@@ -106,6 +109,12 @@ final class AIOSHost: NSObject, NSApplicationDelegate {
 
     @objc private func openStateFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([EventStore.rootURL])
+    }
+
+    @objc private func tickDaemonNow() {
+        Task { @MainActor in
+            await drainQueueOnce()
+        }
     }
 
     @objc private func quit() {
@@ -188,6 +197,9 @@ final class AIOSAppModel: ObservableObject {
     @Published var strategyText = ""
     @Published var memoryText = ""
     @Published var appSkillsText = ""
+    @Published var routinesText = ""
+    @Published var verifierText = ""
+    @Published var learningWorkflowText = ""
     @Published var auditText = ""
     @Published var evalText = ""
     @Published var status = ""
@@ -207,6 +219,9 @@ final class AIOSAppModel: ObservableObject {
             loadSelected()
             memoryText = jsonStringValue(MemoryStore.recent(limit: 12).map(\.dictionary))
             appSkillsText = jsonStringValue(AppSkillStore.list().map(\.dictionary))
+            routinesText = jsonStringValue(RoutineStore.status(limit: 20))
+            verifierText = jsonStringValue(AppVerifierStore.list(limit: 20).map(\.dictionary))
+            learningWorkflowText = jsonStringValue(LearnWorkflowStore.list(limit: 20).map(\.dictionary))
             auditText = AuditLog.readText(limit: 80)
             evalText = E2ERunner.lastRunText()
             let config = try AIOSConfig.load()
@@ -392,6 +407,16 @@ final class AIOSAppModel: ObservableObject {
         }
     }
 
+    func tickDaemon() {
+        do {
+            let state = try LongRunDaemonStore.tick()
+            status = "Daemon tick \(state.tickCount)"
+            refresh()
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
     func runEval() {
         do {
             let results = try E2ERunner().run(filter: nil, repeatCount: 1)
@@ -418,6 +443,7 @@ struct AIOSAppView: View {
                     .keyboardShortcut(.return, modifiers: [.command])
                     .disabled(model.isRunning)
                 Button("刷新") { model.refresh() }
+                Button("Tick") { model.tickDaemon() }
                 Button("状态目录") { model.openStateFolder() }
             }
             .padding(12)
@@ -555,6 +581,36 @@ struct AIOSAppView: View {
                                     .textSelection(.enabled)
                             }
                             .frame(height: 110)
+                            Text("Routines")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.routinesText.isEmpty ? "暂无 routine" : model.routinesText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 90)
+                            Text("Verifiers")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.verifierText.isEmpty ? "暂无 verifier" : model.verifierText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 100)
+                            Text("Learning Workflows")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.learningWorkflowText.isEmpty ? "暂无 learning workflow" : model.learningWorkflowText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 90)
                         }
                     }
                     DisclosureGroup("审计") {

@@ -13,22 +13,22 @@ struct LongAgentCapabilityKernel {
             row(
                 id: "visual-grounding",
                 title: "Multimodal visual grounding with calibration",
-                primaryTools: ["visual_grounder_run", "visual_grounder_model_registry", "visual_grounder_calibrate", "visual_grounder_feedback"],
-                state: "local/VLM/builtin registry, UI map cache, calibration, and feedback rerank loop",
+                primaryTools: ["visual_grounder_run", "visual_ground_action", "visual_grounder_model_registry", "visual_grounder_calibrate", "visual_grounder_feedback"],
+                state: "local/VLM/builtin registry, UI map cache, click/type/hover/drag/scroll/long_press action loop, calibration, and feedback rerank loop",
                 parityTarget: "Ghost OS, Peekaboo"
             ),
             row(
                 id: "recipe-programs",
                 title: "Learn once, reuse as stable workflow program",
-                primaryTools: ["recipe_learn_once", "recipe_program_compile", "recipe_stabilize_program", "recipe_execute_adaptive"],
-                state: "parameter schema, invariants, version policy, repair hints, success counters",
+                primaryTools: ["learn_workflow_plan", "learn_workflow_finalize", "recipe_learn_once", "recipe_program_compile", "recipe_stabilize_program", "recipe_execute_adaptive"],
+                state: "demonstration workflow, parameter schema, verifier attachment, confirmation gate, version policy, repair hints, success counters",
                 parityTarget: "Ghost OS"
             ),
             row(
                 id: "resident-runtime",
                 title: "Long-running resident agent runtime",
-                primaryTools: ["resident_agent_plan", "resident_agent_tick", "long_run_daemon_tick", "task_graph_tick"],
-                state: "durable resident sessions over daemon, task graph, role handoffs, cockpit interrupts",
+                primaryTools: ["resident_agent_plan", "routine_create", "long_task_trigger_create", "resident_agent_tick", "long_run_daemon_tick", "task_graph_tick"],
+                state: "durable resident sessions over daemon, routines, triggers, task graph, role handoffs, cockpit interrupts",
                 parityTarget: "Codex automations"
             ),
             row(
@@ -41,8 +41,8 @@ struct LongAgentCapabilityKernel {
             row(
                 id: "app-skill-ecosystem",
                 title: "Plugin-style app skill ecosystem",
-                primaryTools: ["app_skill_sdk", "app_skill_core_pack", "app_skill_package_scaffold", "app_skill_route"],
-                state: "SDK contract, package manifests, compatibility metadata, core app pack scaffold",
+                primaryTools: ["app_skill_sdk", "app_skill_core_pack", "app_skill_package_scaffold", "app_skill_route", "app_verifier_plan"],
+                state: "SDK contract, package manifests, compatibility metadata, core app pack scaffold, app-specific completion contracts",
                 parityTarget: "Codex skills/plugins"
             ),
             row(

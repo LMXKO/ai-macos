@@ -85,9 +85,26 @@ final class AgentLoop {
         var executedActionCount = checkpointExecutedActionCount
         var verificationState = checkpointVerificationState ?? CompletionContractState(goal: goal, plan: plan)
         var submittedExternalSends = checkpointExternalSends
+        var handledCockpitCommandIDs = Set(eventStore.map { CockpitControlStore.list(runID: $0.runID).map(\.id) } ?? [])
         saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
 
         while round < config.maxSteps, !finished {
+            handleCockpitCommands(
+                handledIDs: &handledCockpitCommandIDs,
+                messages: &messages,
+                goal: goal,
+                plan: &plan,
+                currentStepIndex: nil,
+                round: round,
+                executedActionCount: executedActionCount,
+                submittedExternalSends: submittedExternalSends,
+                verificationState: verificationState,
+                paused: &paused,
+                finished: &finished
+            )
+            if paused || finished {
+                break
+            }
             guard let stepIndex = nextStepIndex(in: plan) else {
                 break
             }
@@ -115,6 +132,23 @@ final class AgentLoop {
                 "role": "user",
                 "content": stepPrompt(step: currentStep, plan: plan)
             ])
+
+            handleCockpitCommands(
+                handledIDs: &handledCockpitCommandIDs,
+                messages: &messages,
+                goal: goal,
+                plan: &plan,
+                currentStepIndex: stepIndex,
+                round: round,
+                executedActionCount: executedActionCount,
+                submittedExternalSends: submittedExternalSends,
+                verificationState: verificationState,
+                paused: &paused,
+                finished: &finished
+            )
+            if paused || finished {
+                break
+            }
 
             let response = try await client.complete(messages: messages, tools: allToolDefinitions)
 
@@ -327,6 +361,22 @@ final class AgentLoop {
                     ])
                 }
                 saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
+                handleCockpitCommands(
+                    handledIDs: &handledCockpitCommandIDs,
+                    messages: &messages,
+                    goal: goal,
+                    plan: &plan,
+                    currentStepIndex: stepIndex,
+                    round: round,
+                    executedActionCount: executedActionCount,
+                    submittedExternalSends: submittedExternalSends,
+                    verificationState: verificationState,
+                    paused: &paused,
+                    finished: &finished
+                )
+                if paused || finished {
+                    break
+                }
             }
 
             if finished {
@@ -493,6 +543,89 @@ final class AgentLoop {
             "resume_at": resumeAt ?? "",
             "reason": reason
         ])
+    }
+
+    private func handleCockpitCommands(
+        handledIDs: inout Set<String>,
+        messages: inout [[String: Any]],
+        goal: String,
+        plan: inout TaskPlan,
+        currentStepIndex: Int?,
+        round: Int,
+        executedActionCount: Int,
+        submittedExternalSends: Set<String>,
+        verificationState: CompletionContractState,
+        paused: inout Bool,
+        finished: inout Bool
+    ) {
+        guard let eventStore else { return }
+        let commands = CockpitControlStore.list(runID: eventStore.runID)
+            .reversed()
+            .filter { !handledIDs.contains($0.id) }
+        guard !commands.isEmpty else { return }
+
+        for command in commands {
+            handledIDs.insert(command.id)
+            emitEvent("CockpitCommandObserved", [
+                "command_id": command.id,
+                "command": command.command,
+                "feedback": command.feedback
+            ])
+            switch command.command {
+            case "pause":
+                markStepPaused(plan: &plan, currentStepIndex: currentStepIndex, reason: "Cockpit pause")
+                saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
+                try? eventStore.updateStatus("paused")
+                try? eventStore.append("RunPaused", ["reason": "Cockpit pause"])
+                captureShadow(goal: goal, trigger: "cockpit_pause")
+                paused = true
+                return
+            case "stop", "cancel":
+                markStepPaused(plan: &plan, currentStepIndex: currentStepIndex, reason: "Cockpit stop")
+                saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
+                try? eventStore.updateStatus("canceled")
+                try? eventStore.append("RunCanceled", ["reason": "Cockpit stop"])
+                captureShadow(goal: goal, trigger: "cockpit_stop")
+                paused = true
+                return
+            case "feedback":
+                let feedback = command.feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !feedback.isEmpty else { continue }
+                messages.append(["role": "user", "content": "HumanFeedback:\n\(feedback)\nUse this feedback in the next action and acknowledge it with concrete tool evidence."])
+                try? eventStore.append("UserFeedbackApplied", ["feedback": feedback, "command_id": command.id])
+                captureShadow(goal: goal, trigger: "cockpit_feedback")
+            case "replan":
+                let feedback = command.feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let currentStepIndex, plan.steps.indices.contains(currentStepIndex), plan.steps[currentStepIndex].status == .running {
+                    plan.steps[currentStepIndex].status = .pending
+                    plan.steps[currentStepIndex].evidence.append("Cockpit replan requested: \(feedback)")
+                }
+                messages.append(["role": "user", "content": "HumanReplanRequest:\n\(feedback.isEmpty ? goal : feedback)\nCall plan_update if the plan should change, then continue with concrete app/observation tools."])
+                saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
+                try? eventStore.append("UserReplanApplied", ["feedback": feedback, "command_id": command.id])
+                captureShadow(goal: goal, trigger: "cockpit_replan")
+            case "branch":
+                let feedback = command.feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+                messages.append(["role": "user", "content": "HumanBranchHint:\n\(feedback)\nIf continuing this run is still correct, continue; otherwise preserve evidence for a branch run."])
+                try? eventStore.append("UserBranchHintApplied", ["feedback": feedback, "command_id": command.id])
+            case "resume", "continue":
+                try? eventStore.updateStatus("running")
+                messages.append(["role": "user", "content": "CockpitResume:\nContinue from the checkpoint/current step. Do not redo completed delivery unless verification requires it."])
+                try? eventStore.append("RunResumeApplied", ["command_id": command.id])
+            default:
+                let feedback = command.feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+                messages.append(["role": "user", "content": "CockpitCommand \(command.command):\n\(feedback)"])
+            }
+        }
+    }
+
+    private func markStepPaused(plan: inout TaskPlan, currentStepIndex: Int?, reason: String) {
+        guard let currentStepIndex,
+              plan.steps.indices.contains(currentStepIndex),
+              plan.steps[currentStepIndex].status == .running
+        else { return }
+        plan.steps[currentStepIndex].status = .pending
+        plan.steps[currentStepIndex].evidence.append(reason)
     }
 
     private func handleOrchestrationCall(
@@ -878,11 +1011,11 @@ final class AgentLoop {
     Prefer dedicated app adapters for Finder, Safari, Chrome, WPS, LibreOffice, Preview, Notes, Mail, Calendar, Reminders, WeChat, Lark, QQ, Tencent Meeting, Baidu Netdisk, ToDesk, Docker, Shortcuts, and IDEs when they match the task.
     Before manual multi-step work, use recipe_suggest or the provided RecipeSuggestions and execute a matching recipe with recipe_execute when the required params are available. If no recipe fits or params are missing, continue manually and gather enough detail to make the workflow learnable.
     Use MemoryContext, SemanticContextPack, memory_recall, memory_semantic_recall, and memory_context_pack for stable user/app/workflow facts and prior episodes that may help the current task. Use memory_remember only for reusable, non-sensitive preferences or automation hints; never store passwords, tokens, keys, payment data, or private secrets.
-    Use computer_use_strategy, computer_use_model_stack, long_agent_capability_matrix, memory_profile, app_skill_suggest, background_native_kernel, background_driver_probe, and background_capabilities when the route is unclear. For browser/web app tasks, prefer browser_agent_contract, browser_agent_plan, browser_agent_observe, browser_agent_act, browser_agent_extract, browser_agent_wait, and CDP tools when an endpoint is available; they can control tabs without cursor/focus and keep selector/observation cache. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background_native_kernel/background_driver_dispatch/background_action or direct CDP/app scripting, background locator tools, foreground locator tools, visual_grounder_run/visual_ground/visual_analyze, menu/keyboard actions, and raw coordinates last.
+    Use computer_use_strategy, computer_use_model_stack, long_agent_capability_matrix, tool_service_catalog, memory_profile, app_skill_suggest, app_verifier_plan, background_native_kernel, background_driver_probe, background_driver_capsule, and background_capabilities when the route is unclear. For browser/web app tasks, prefer browser_agent_contract, browser_agent_plan, browser_agent_observe, browser_agent_act, browser_agent_extract, browser_agent_wait, and CDP tools when an endpoint is available; they can control tabs without cursor/focus and keep selector/observation cache. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background_native_kernel/background_driver_dispatch/background_action or direct CDP/app scripting, app_skill_route/app_skill_execute_adapter, background locator tools, foreground locator tools, visual_grounder_run/visual_ground/visual_analyze, menu/keyboard actions, and raw coordinates last.
     Before acting inside an app, call aios_automation_context or an app-specific observation tool to orient. Prefer aios_find, aios_inspect, aios_read, aios_background_click, aios_background_type, aios_click, aios_type, and aios_wait over coordinate tools. For long-running tasks, try the background tools first because they use AXPress/AXValue only and avoid stealing focus. Keep restore_focus=true unless the task explicitly needs the target app left focused.
-    For visual/canvas/icon-heavy interfaces, call visual_grounder_model_registry, visual_grounder_policy, visual_grounder_run, visual_ground, or visual_analyze before visual_click; treat OCR-only matches as one signal, not the whole perception layer. Record visual_grounder_feedback when a candidate succeeds or fails.
-    For repeatable workflows, call recipe_program_select/recipe_learn_once/recipe_stabilize_program so successful work becomes a durable workflow program.
-    For work that must wait on time or external state, use resident_agent_plan, long_task_watch, or runtime_pause with a resume time instead of busy-waiting through many steps. Use shadow_episode_policy and memory_shadow_capture at long pauses and completions.
+    For visual/canvas/icon-heavy interfaces, call visual_grounder_model_registry, visual_grounder_policy, visual_grounder_run, visual_ground, or visual_analyze before visual_click; verify reusable candidates with visual_grounder_verify, and record visual_grounder_feedback when a candidate succeeds or fails.
+    For repeatable workflows, call recipe_program_select/recipe_learn_once/recipe_stabilize_program or learn_workflow_plan/learn_workflow_finalize so successful demonstrations become durable workflow programs.
+    For work that must wait on time or external state, use resident_agent_plan, routine_create, long_task_trigger_create, long_task_watch, or runtime_pause with a resume time instead of busy-waiting through many steps. Use shadow_episode_policy and memory_shadow_capture at long pauses and completions.
 
     After every meaningful action, use returned evidence or observation tools to verify progress. Call step_complete only when a step is verified. Use step_failed or plan_update for recovery. Call task_complete only after all requested delivery is done and verified.
     Opening an app, searching a contact, clicking, typing, or staging content is process evidence only. It never proves the requested outcome by itself. Material outcomes require typed verified evidence such as external_message_sent, file_saved, calendar_event_created, reminder_created, note_created, mail_draft_created, shortcut_ran, shell_command_submitted, browser_url_visible, or app_opened when the user only asked to open an app.

@@ -14,14 +14,27 @@ struct CockpitDashboardStore {
             return snapshot
         }()
         let artifacts = artifactRows(runID: runID, limit: limit)
+        let commands = CockpitControlStore.list(runID: runID).prefix(max(1, limit)).map(\.dictionary)
+        let resident = ResidentAgentStore.status(limit: limit)
+        let routines = RoutineStore.status(limit: limit)
+        let learning = LearnWorkflowStore.list(limit: limit).map(\.dictionary)
+        let verifiers = AppVerifierStore.list(limit: limit).map(\.dictionary)
+        let driverReceipts = BackgroundDriverCapsuleStore.recent(limit: limit)
         return [
             "schema": "aios.cockpit.dashboard.v1",
             "run_id": runID ?? "",
             "live": jsonStringValue(live),
             "run_snapshot": jsonStringValue(runSnapshot),
             "artifacts": jsonStringValue(artifacts),
-            "views": "runs,queue,task_graphs,current_step,screen_or_window_snapshot,plan_tree,memory_hits,recipe_hits,trajectory,replay,artifacts,controls",
-            "controls": "pause,resume,feedback,replan,branch,stop,takeover,continue"
+            "commands": jsonStringValue(Array(commands)),
+            "resident_runtime": jsonStringValue(resident),
+            "routine_runtime": jsonStringValue(routines),
+            "learning_workflows": jsonStringValue(learning),
+            "verifier_contracts": jsonStringValue(verifiers),
+            "background_receipts": jsonStringValue(driverReceipts),
+            "views": "runs,queue,task_graphs,resident_sessions,routines,triggers,learning_workflows,verifier_contracts,current_step,screen_or_window_snapshot,plan_tree,memory_hits,recipe_hits,trajectory,replay,driver_receipts,artifacts,controls",
+            "controls": "pause,resume,feedback,replan,branch,stop,takeover,continue,create_routine,tick_daemon,learn_workflow,verify_completion",
+            "live_control_contract": "AgentLoop polls cockpit commands during execution; daemon tick advances queue/task_graph/routine/resident work; feedback/replan enters model context, pause/stop saves checkpoint immediately"
         ]
     }
 

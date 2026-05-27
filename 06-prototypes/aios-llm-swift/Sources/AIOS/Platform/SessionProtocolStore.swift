@@ -134,8 +134,8 @@ struct SessionProtocolStore {
             if name.hasPrefix("trajectory_") { return "trajectory" }
             if name.hasPrefix("recipe_") || name.hasPrefix("learn_") { return "recipes" }
             if name.hasPrefix("memory_") || name.hasPrefix("episode_") || name.hasPrefix("context_graph_") { return "memory" }
-            if name.hasPrefix("app_skill") { return "skills" }
-            if name.hasPrefix("runtime_") { return "runtime" }
+            if name.hasPrefix("app_skill") || name.hasPrefix("app_verifier") { return "skills" }
+            if name.hasPrefix("runtime_") || name.hasPrefix("routine_") { return "runtime" }
             if name.hasPrefix("session_") || name == "cockpit_snapshot" || name == "platform_status" { return "platform" }
             return "macos"
         }

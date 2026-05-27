@@ -55,6 +55,7 @@ struct BackgroundDriverBridge {
             "schema": "aios.background.driver.dispatch.v1",
             "selected_driver": selected["id"] ?? "",
             "driver": jsonStringValue(selected),
+            "capsule_contract": jsonStringValue(BackgroundDriverCapsuleStore.contract()),
             "dispatch_plan": jsonStringValue(plan),
             "request": jsonStringValue(request),
             "status": dryRun ? "planned" : "pending_execution",
@@ -63,6 +64,12 @@ struct BackgroundDriverBridge {
         ]
         if ["browser_cdp", "semantic_app_adapter", "ax_semantic"].contains(selected["id"] ?? "") {
             data["execution_mode"] = "builtin_tool_runtime"
+            data["receipt"] = jsonStringValue(BackgroundDriverCapsuleStore.recordReceipt(
+                driver: selected["id"] ?? "",
+                request: request,
+                status: dryRun ? "planned" : "pending_builtin_runtime",
+                mode: dryRun ? "dry_run" : "builtin"
+            ))
             return data
         }
         guard !dryRun, available, FileManager.default.fileExists(atPath: binary) else {
@@ -71,6 +78,13 @@ struct BackgroundDriverBridge {
             } else if !FileManager.default.fileExists(atPath: binary) {
                 data["reason"] = "Selected external driver binary is not present."
             }
+            data["receipt"] = jsonStringValue(BackgroundDriverCapsuleStore.recordReceipt(
+                driver: selected["id"] ?? "",
+                request: request,
+                status: dryRun ? "planned" : "blocked",
+                mode: dryRun ? "dry_run" : "external",
+                error: data["reason"] ?? ""
+            ))
             return data
         }
         let result = try runDriver(binary: binary, request: request)
@@ -78,6 +92,15 @@ struct BackgroundDriverBridge {
         data["driver_stderr"] = truncateMiddle(result.stderr, maxCharacters: 2_000)
         data["exit_code"] = "\(result.exitCode)"
         data["status"] = result.exitCode == 0 ? "executed" : "failed"
+        data["receipt"] = jsonStringValue(BackgroundDriverCapsuleStore.recordReceipt(
+            driver: selected["id"] ?? "",
+            request: request,
+            status: data["status"] ?? "",
+            mode: "external",
+            stdout: result.stdout,
+            stderr: result.stderr,
+            error: result.exitCode == 0 ? "" : "external_driver_failed"
+        ))
         return data
     }
 
@@ -97,23 +120,7 @@ struct BackgroundDriverBridge {
     }
 
     private static func requestEnvelope(driver: [String: String], target: BackgroundControlTarget, action: BackgroundControlAction) -> [String: Any] {
-        [
-            "schema": "aios.background.driver.request.v1",
-            "driver": driver["id"] ?? "",
-            "target": target.dictionary,
-            "action": action.dictionary.merging([
-                "text": action.text,
-                "query": action.query,
-                "selector": action.selector,
-                "script": action.script
-            ]) { current, _ in current },
-            "requirements": [
-                "must_not_move_cursor": true,
-                "must_not_steal_focus": true,
-                "must_not_change_space": true,
-                "must_return_observable_evidence": true
-            ]
-        ]
+        BackgroundDriverCapsuleStore.requestEnvelope(driver: driver, target: target, action: action)
     }
 
     private static func driver(id: String, title: String, binary: String, surfaces: String, guarantees: String, available: Bool, notes: String) -> [String: String] {

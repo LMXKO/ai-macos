@@ -16,6 +16,7 @@ struct AppSkillCorePackStore {
                     recipes: csv(package["recipes"] ?? ""),
                     selectors: [:],
                     permissions: csv(package["permissions"] ?? ""),
+                    entrypoints: entrypoints(package["entrypoints"] ?? ""),
                     notes: package["notes"] ?? ""
                 )
                 installed.append(skill.dictionary)
@@ -26,7 +27,7 @@ struct AppSkillCorePackStore {
             "install": install ? "true" : "false",
             "packages": jsonStringValue(packages),
             "installed": jsonStringValue(installed),
-            "coverage": "Finder, Chrome, Safari, Mail, Calendar, TextEdit, WeChat, Terminal, Figma/canvas, generic native apps",
+            "coverage": "Finder, Chrome, Safari, Mail, Calendar, TextEdit, WeChat, Lark/Feishu, QQ, Notes, Reminders, WPS/Office/LibreOffice/Preview, IDEs, netdisk/meeting utilities, Terminal, Figma/canvas, generic native apps",
             "extension_policy": "each package owns selectors, recipes, app version compatibility, driver channel, and examples"
         ]
     }
@@ -94,6 +95,66 @@ struct AppSkillCorePackStore {
                 "notes": "Chat workflow adapter with recipient/message verification."
             ],
             [
+                "id": "core-lark",
+                "app_name": "Lark/Feishu",
+                "bundle_id": "com.larksuite.Lark,com.bytedance.macos.feishu",
+                "capabilities": "chat,file-send,verify",
+                "tools": "lark_open,lark_search_chat,lark_stage_file,lark_send_text,lark_send_staged,lark_verify_chat,lark_verify_recent_message,app_verifier_plan,app_verifier_evaluate",
+                "recipes": "send-file-to-contact,daily-work-sync",
+                "permissions": "accessibility,screen-recording",
+                "notes": "Lark/Feishu adapter seed with chat and recent-message completion contracts."
+            ],
+            [
+                "id": "core-qq",
+                "app_name": "QQ",
+                "bundle_id": "com.tencent.qq",
+                "capabilities": "chat,file-send,verify",
+                "tools": "qq_open,qq_search_chat,qq_stage_file,qq_send_text,qq_send_staged,qq_verify_chat,qq_verify_recent_message,app_verifier_plan,app_verifier_evaluate",
+                "recipes": "send-file-to-contact",
+                "permissions": "accessibility,screen-recording",
+                "notes": "QQ adapter seed with recipient and recent-message completion contracts."
+            ],
+            [
+                "id": "core-notes-reminders",
+                "app_name": "Notes and Reminders",
+                "bundle_id": "com.apple.Notes,com.apple.reminders",
+                "capabilities": "notes,reminders,local-productivity,verify",
+                "tools": "notes_create_note,notes_search,reminders_create,app_verifier_plan",
+                "recipes": "capture-note,create-reminder",
+                "permissions": "automation",
+                "notes": "Local productivity adapters for durable personal task capture."
+            ],
+            [
+                "id": "core-office-docs",
+                "app_name": "WPS/Office/LibreOffice/Preview",
+                "bundle_id": "com.kingsoft.wpsoffice.mac,org.libreoffice.script,com.apple.Preview",
+                "capabilities": "documents,spreadsheets,presentations,pdf-export,verify",
+                "tools": "wps_open_file,libreoffice_open_file,libreoffice_export_pdf,preview_open_file,finder_file_info,finder_read_text_file,app_verifier_plan,app_verifier_evaluate",
+                "recipes": "export-document-pdf,review-document",
+                "permissions": "filesystem,automation",
+                "notes": "Office document seed with deterministic filesystem verification for exported artifacts."
+            ],
+            [
+                "id": "core-ide-pack",
+                "app_name": "Xcode/JetBrains IDE",
+                "bundle_id": "com.apple.dt.Xcode,com.jetbrains.pycharm,com.jetbrains.rustrover",
+                "capabilities": "code,projects,open-path,verify",
+                "tools": "xcode_open_path,pycharm_open_path,rustrover_open_path,ax_describe_frontmost,visual_read,app_verifier_plan",
+                "recipes": "open-project-and-edit",
+                "permissions": "automation,accessibility",
+                "notes": "IDE adapter seed for opening project/file paths and checking active context by AX/OCR."
+            ],
+            [
+                "id": "core-utility-apps",
+                "app_name": "Baidu Netdisk, Tencent Meeting, ToDesk",
+                "bundle_id": "com.baidu.netdisk-mac,com.tencent.meeting,com.youqu.todesk",
+                "capabilities": "file-upload,meeting,remote-control,stage,verify",
+                "tools": "baidunetdisk_open,baidunetdisk_stage_file,tencent_meeting_open,tencent_meeting_stage_join,todesk_open,todesk_stage_remote_id,visual_read,ax_describe_frontmost,app_verifier_plan",
+                "recipes": "upload-file-and-verify,join-meeting-after-confirmation",
+                "permissions": "accessibility,screen-recording",
+                "notes": "High-frequency utility apps with staged actions and explicit visible-state verifiers."
+            ],
+            [
                 "id": "core-terminal",
                 "app_name": "Terminal",
                 "bundle_id": "com.apple.Terminal",
@@ -106,11 +167,12 @@ struct AppSkillCorePackStore {
             [
                 "id": "core-canvas-native",
                 "app_name": "Figma/Blender/canvas native surfaces",
-                "bundle_id": "",
-                "capabilities": "canvas,icons,non-ax,vision-grounding,native-driver",
-                "tools": "background_native_kernel,background_driver_dispatch,visual_grounder_run,visual_grounder_model_registry,visual_grounder_feedback",
-                "recipes": "",
+                "bundle_id": "com.figma.Desktop,org.blenderfoundation.blender",
+                "capabilities": "canvas,icons,non-ax,vision-grounding,native-driver,verify",
+                "tools": "background_native_kernel,background_driver_capsule,background_driver_dispatch,app_skill_execute_adapter,visual_grounder_run,visual_ground_action,visual_grounder_verify,visual_grounder_model_registry,visual_grounder_feedback,app_verifier_plan",
+                "recipes": "canvas-edit-and-verify",
                 "permissions": "adapter-specific",
+                "entrypoints": "adapter=adapters/adapter.sh",
                 "notes": "Non-AX native surfaces require app-specific adapter or external CUA-compatible driver capsule."
             ]
         ]
@@ -118,6 +180,14 @@ struct AppSkillCorePackStore {
 
     private static func csv(_ text: String) -> [String] {
         text.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    private static func entrypoints(_ text: String) -> [String: String] {
+        text.split(separator: ",").reduce(into: [String: String]()) { result, item in
+            let parts = item.split(separator: "=", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return }
+            result[parts[0]] = parts[1]
+        }
     }
 }
 
