@@ -20,16 +20,23 @@ struct LongAgentCapabilityKernel {
             row(
                 id: "recipe-programs",
                 title: "Learn once, reuse as stable workflow program",
-                primaryTools: ["learn_workflow_plan", "learn_workflow_finalize", "recipe_learn_once", "recipe_program_compile", "recipe_stabilize_program", "recipe_execute_adaptive"],
-                state: "demonstration workflow, parameter schema, verifier attachment, confirmation gate, version policy, repair hints, success counters",
+                primaryTools: ["learn_workflow_reuse_plan", "learn_workflow_plan", "learn_workflow_finalize", "recipe_learn_once", "recipe_program_compile", "recipe_stabilize_program", "recipe_execute_adaptive"],
+                state: "reuse planner over learned workflows, demonstration workflow, parameter schema, verifier attachment, confirmation gate, version policy, repair hints, success counters",
                 parityTarget: "Ghost OS"
             ),
             row(
                 id: "resident-runtime",
                 title: "Long-running resident agent runtime",
-                primaryTools: ["resident_agent_plan", "routine_create", "long_task_trigger_create", "resident_agent_tick", "long_run_daemon_tick", "task_graph_tick"],
-                state: "durable resident sessions over daemon, routines, triggers, task graph, role handoffs, cockpit interrupts",
+                primaryTools: ["resident_autopilot_start", "resident_agent_plan", "routine_create", "long_task_trigger_create", "resident_agent_tick", "long_run_daemon_tick", "task_graph_tick"],
+                state: "workflow-aware durable resident sessions over daemon, routines, triggers, task graph, role handoffs, cockpit interrupts",
                 parityTarget: "Codex automations"
+            ),
+            row(
+                id: "goal-workflows",
+                title: "End-to-end goal workflow packs",
+                primaryTools: ["goal_workflow_catalog", "chat_continuity_start", "browser_business_start", "document_message_start", "resident_autopilot_start"],
+                state: "five executable workflow packs for continuous chat, Chrome business web tasks, Finder/document/message delivery, resident autopilot, and cockpit operation",
+                parityTarget: "Operator-grade macOS task packs"
             ),
             row(
                 id: "deep-memory",
@@ -55,8 +62,8 @@ struct LongAgentCapabilityKernel {
             row(
                 id: "cockpit-replay",
                 title: "Product cockpit and replayable sessions",
-                primaryTools: ["cockpit_dashboard", "cockpit_replay_spec", "trajectory_bundle_manifest", "trajectory_branch_create"],
-                state: "dashboard views, action/evidence lanes, replay bundle, resume/branch/clip controls",
+                primaryTools: ["cockpit_operator_board", "cockpit_dashboard", "cockpit_replay_spec", "trajectory_bundle_manifest", "trajectory_branch_create"],
+                state: "operator board, dashboard views, action/evidence lanes, replay bundle, resume/branch/clip controls",
                 parityTarget: "Codex app, Peekaboo"
             ),
             row(
@@ -69,8 +76,8 @@ struct LongAgentCapabilityKernel {
             row(
                 id: "model-stack",
                 title: "Computer-use model/perception strategy",
-                primaryTools: ["computer_use_model_stack", "computer_use_strategy", "visual_grounder_model_registry"],
-                state: "planner/executor/grounder/recipe/verifier/memory model routing with deterministic fallback",
+                primaryTools: ["computer_use_model_stack", "computer_use_provider_plan", "computer_use_strategy", "visual_grounder_model_registry"],
+                state: "planner/executor/browser/grounder/recipe/verifier/memory/runtime provider routing with deterministic fallback",
                 parityTarget: "Ghost OS, Codex"
             )
         ]

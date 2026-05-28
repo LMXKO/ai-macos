@@ -24,6 +24,10 @@ let package = Package(
                 .linkedFramework("ScriptingBridge"),
                 .linkedLibrary("sqlite3")
             ]
+        ),
+        .testTarget(
+            name: "AIOSContractTests",
+            dependencies: ["AIOS"]
         )
     ]
 )

@@ -202,10 +202,14 @@ struct AppVerifierStore {
             "found": "true",
             "contract": jsonStringValue(contract.dictionary),
             "tool_sequence": jsonStringValue(toolSequence(contract: contract, target: target, value: value, path: path, url: url)),
+            "pre_check_sequence": jsonStringValue(preCheckSequence(contract: contract, target: target, value: value, path: path, url: url)),
+            "post_check_sequence": jsonStringValue(postCheckSequence(contract: contract, target: target, value: value, path: path, url: url)),
             "required_inputs": contract.requiredInputs.joined(separator: ","),
             "evidence_fields": contract.evidenceFields.joined(separator: ","),
             "fallback_channels": contract.fallbackChannels.joined(separator: ","),
-            "completion_rule": completionRule(for: contract)
+            "completion_rule": completionRule(for: contract),
+            "idempotency_key_fields": idempotencyKeyFields(for: contract).joined(separator: ","),
+            "side_effect_policy": sideEffectPolicy(for: contract)
         ]
     }
 
@@ -261,6 +265,56 @@ struct AppVerifierStore {
             ]
         default:
             return contract.verifierTools.map { ["tool": $0, "target": target, "value": value, "path": path, "url": url] }
+        }
+    }
+
+    private static func preCheckSequence(contract: AppVerifierContract, target: String, value: String, path: String, url: String) -> [[String: String]] {
+        switch contract.effect {
+        case "message_sent":
+            let sequence = toolSequence(contract: contract, target: target, value: "", path: path, url: url)
+            return sequence.isEmpty ? contract.verifierTools.prefix(1).map { ["tool": $0, "target": target] } : sequence
+        case "file_created", "document_exported":
+            let checkPath = path.isEmpty ? value : path
+            return checkPath.isEmpty ? [] : [["tool": "finder_file_info", "path": checkPath, "purpose": "detect_existing_artifact_before_write"]]
+        case "calendar_event_created":
+            let title = value.isEmpty ? target : value
+            return title.isEmpty ? [] : [["tool": "calendar_find_events", "title": title, "purpose": "detect_existing_event_before_create"]]
+        case "web_state_reached":
+            return url.isEmpty ? [] : [["tool": contract.id == "safari-web-state" ? "safari_get_current_url" : "chrome_get_current_tab", "url": url]]
+        default:
+            return []
+        }
+    }
+
+    private static func postCheckSequence(contract: AppVerifierContract, target: String, value: String, path: String, url: String) -> [[String: String]] {
+        toolSequence(contract: contract, target: target, value: value, path: path, url: url)
+    }
+
+    private static func idempotencyKeyFields(for contract: AppVerifierContract) -> [String] {
+        switch contract.effect {
+        case "message_sent":
+            return ["app_name", "recipient_or_chat", "message_probe_or_attachment"]
+        case "calendar_event_created":
+            return ["calendar", "title", "start", "end"]
+        case "mail_draft_created":
+            return ["recipient", "subject", "body_probe"]
+        case "file_created", "document_exported":
+            return ["path"]
+        case "web_state_reached":
+            return ["browser", "url", "selector_or_text_probe"]
+        default:
+            return contract.requiredInputs
+        }
+    }
+
+    private static func sideEffectPolicy(for contract: AppVerifierContract) -> String {
+        switch contract.effect {
+        case "message_sent", "calendar_event_created", "mail_draft_created", "shortcut_ran", "shell_command_submitted":
+            return "exactly_once_per_run: record submitted before action; verify with post_check_sequence before completion; retry only after failed ledger status or explicit user approval"
+        case "file_created", "document_exported", "file_uploaded":
+            return "verified_once_per_run: retry allowed until verified; once verified, use verifier instead of repeating the write/upload"
+        default:
+            return "verify_before_complete"
         }
     }
 

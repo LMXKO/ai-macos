@@ -734,6 +734,13 @@ final class ToolRegistry {
                 "app_name": schema("string", "Optional app name."),
                 "bundle_id": schema("string", "Optional bundle id.")
             ], required: ["query"]),
+            tool("app_skill_resolve_action", "Resolve a generic app action into a concrete app skill tool, normalized arguments, and package adapter payload preview.", [
+                "query": schema("string", "Task/app query."),
+                "app_name": schema("string", "Optional app name."),
+                "bundle_id": schema("string", "Optional bundle id."),
+                "action": schema("string", "Generic action such as open, read, verify, create, send, search, export, or script."),
+                "arguments_json": schema("string", "Generic action arguments as a JSON object string.")
+            ]),
             tool("app_skill_export_manifest", "Export a built-in or package app skill manifest to a portable JSON artifact.", [
                 "id": schema("string", "Skill or package id.")
             ], required: ["id"]),
@@ -775,6 +782,11 @@ final class ToolRegistry {
                 "path": schema("string", "Expected filesystem path."),
                 "url": schema("string", "Expected URL."),
                 "evidence_json": schema("string", "Optional prior ToolResult data JSON to evaluate without probing live apps.")
+            ]),
+            tool("side_effect_ledger_status", "Inspect durable exactly-once side effect ledger records for a run/key.", [
+                "run_id": schema("string", "Optional run id."),
+                "key": schema("string", "Optional side-effect idempotency key."),
+                "limit": schema("number", "Maximum records. Default 50.")
             ]),
             tool("trajectory_get", "Return a replayable summarized trajectory for a prior run.", [
                 "run_id": schema("string", "Run id."),
@@ -1048,6 +1060,10 @@ final class ToolRegistry {
                 "run_id": schema("string", "Optional run id."),
                 "limit": schema("number", "Maximum rows. Default 20.")
             ]),
+            tool("cockpit_live_summary", "Build a compact live cockpit summary for long-running operation: run counts, queue, daemon, resident sessions, routines, selected run, replay availability, and next actions.", [
+                "run_id": schema("string", "Optional run id."),
+                "limit": schema("number", "Maximum rows. Default 20.")
+            ]),
             tool("cockpit_dashboard_export", "Export the cockpit dashboard payload to a durable JSON artifact.", [
                 "run_id": schema("string", "Optional run id."),
                 "limit": schema("number", "Maximum rows. Default 20.")
@@ -1079,8 +1095,54 @@ final class ToolRegistry {
                 "app": schema("string", "Optional app context."),
                 "mode": schema("string", "fast, balanced, or deep. Default balanced.")
             ], required: ["goal"]),
-            tool("long_agent_capability_matrix", "Return the 10-layer capability matrix for long-running automatic macOS computer use.", [
+            tool("computer_use_provider_plan", "Route each computer-use role to a concrete provider/model/runner with fallback policy for long-running macOS automation.", [
+                "goal": schema("string", "Task goal."),
+                "app": schema("string", "Optional app context."),
+                "mode": schema("string", "fast, balanced, or deep. Default balanced.")
+            ], required: ["goal"]),
+            tool("long_agent_capability_matrix", "Return the capability matrix for long-running automatic macOS computer use.", [
                 "goal": schema("string", "Optional goal to contextualize the matrix.")
+            ]),
+            tool("goal_workflow_catalog", "List the five goal-oriented workflow packs for long-running macOS automation: chat, browser, document messaging, resident autopilot, and cockpit.", [
+                "goal": schema("string", "Optional goal used to filter or contextualize workflow packs.")
+            ]),
+            tool("chat_continuity_start", "Create a durable WeChat/Lark/QQ continuous conversation workflow with follow-up turns and optional resident session.", [
+                "app": schema("string", "wechat, lark/feishu, or qq. Default wechat."),
+                "recipient": schema("string", "Target contact/chat name."),
+                "chat": schema("string", "Alias for recipient."),
+                "objective": schema("string", "Conversation objective."),
+                "message_text": schema("string", "Optional first message to send/synchronize."),
+                "cadence_seconds": schema("number", "Seconds between follow-up turns. Default 300."),
+                "max_turns": schema("number", "Maximum planned follow-up turns. Default 6."),
+                "create_graph": schema("boolean", "Create a durable task graph. Default true."),
+                "create_resident": schema("boolean", "Create a resident session for long-running follow-up. Default true.")
+            ]),
+            tool("browser_business_start", "Create a durable Chrome business web workflow using browser observe/act/extract/wait and selector cache.", [
+                "url": schema("string", "Optional target URL."),
+                "goal": schema("string", "Business web task goal."),
+                "extraction_schema": schema("string", "Optional extraction schema or result fields."),
+                "create_graph": schema("boolean", "Create a durable task graph. Default true.")
+            ], required: ["goal"]),
+            tool("document_message_start", "Create a durable Finder + document + messaging workflow: locate file, export/prepare artifact, send to chat, verify delivery.", [
+                "path": schema("string", "Source document path."),
+                "outdir": schema("string", "Output directory. Default ~/Desktop."),
+                "app": schema("string", "wechat, lark/feishu, or qq. Default wechat."),
+                "recipient": schema("string", "Target contact/chat name."),
+                "chat": schema("string", "Alias for recipient."),
+                "instructions": schema("string", "Document handling and delivery instructions."),
+                "create_graph": schema("boolean", "Create a durable task graph. Default true.")
+            ], required: ["path", "recipient"]),
+            tool("resident_autopilot_start", "Create a resident long-task autopilot session with role route, task graph nodes, cadence, and memory context.", [
+                "goal": schema("string", "Long-running task goal."),
+                "app": schema("string", "Optional app name."),
+                "app_name": schema("string", "Optional app name alias."),
+                "surface": schema("string", "Optional surface hint such as chat, web, document, canvas."),
+                "cadence_seconds": schema("number", "Seconds between resident ticks. Default 60."),
+                "create_resident": schema("boolean", "Create the resident session. Default true.")
+            ], required: ["goal"]),
+            tool("cockpit_operator_board", "Return a product cockpit operator board over workflow packs, queue, resident sessions, task graphs, evidence, replay, and operator actions.", [
+                "run_id": schema("string", "Optional selected run id."),
+                "limit": schema("number", "Maximum rows per lane. Default 20.")
             ]),
             tool("background_native_kernel", "Return the native/background control kernel profile for a target, including inactive/offscreen/non-AX adapter policy.", [
                 "app_name": schema("string", "Optional app name."),
@@ -1228,6 +1290,12 @@ final class ToolRegistry {
             tool("learn_workflow_list", "List durable learning workflows and their reuse/confirmation status.", [
                 "limit": schema("number", "Maximum workflows. Default 20.")
             ]),
+            tool("learn_workflow_reuse_plan", "Plan how to reuse, confirm, stabilize, repair, or record a learned workflow for a new goal using actual recipes and learning records.", [
+                "goal": schema("string", "Task goal to match against learned workflows and recipe programs."),
+                "app_name": schema("string", "Optional target app."),
+                "verifier_effect": schema("string", "Optional expected effect such as message_sent or document_exported."),
+                "limit": schema("number", "Maximum candidates/workflows. Default 5.")
+            ], required: ["goal"]),
             tool("finder_list_directory", "List files in a directory with names, types, sizes, and modified dates.", [
                 "path": schema("string", "Absolute or ~/ directory path. Default: ~/Downloads"),
                 "limit": schema("number", "Maximum entries. Default 80.")
@@ -1685,6 +1753,8 @@ final class ToolRegistry {
                 return appSkillPackageValidateTool(call.arguments)
             case "app_skill_route":
                 return appSkillRouteTool(call.arguments)
+            case "app_skill_resolve_action":
+                return try appSkillResolveActionTool(call.arguments)
             case "app_skill_export_manifest":
                 return try appSkillExportManifestTool(call.arguments)
             case "app_skill_execute_adapter":
@@ -1697,6 +1767,8 @@ final class ToolRegistry {
                 return appVerifierPlanTool(call.arguments)
             case "app_verifier_evaluate":
                 return try appVerifierEvaluateTool(call.arguments)
+            case "side_effect_ledger_status":
+                return sideEffectLedgerStatusTool(call.arguments)
             case "trajectory_get":
                 return try trajectoryGetTool(call.arguments)
             case "trajectory_export":
@@ -1809,6 +1881,8 @@ final class ToolRegistry {
                 return appSkillMarketplaceTool(call.arguments)
             case "cockpit_dashboard":
                 return cockpitDashboardTool(call.arguments)
+            case "cockpit_live_summary":
+                return cockpitLiveSummaryTool(call.arguments)
             case "cockpit_dashboard_export":
                 return try cockpitDashboardExportTool(call.arguments)
             case "trajectory_bundle_manifest":
@@ -1823,8 +1897,22 @@ final class ToolRegistry {
                 return computerUseStrategyTool(call.arguments)
             case "computer_use_model_stack":
                 return computerUseModelStackTool(call.arguments)
+            case "computer_use_provider_plan":
+                return computerUseProviderPlanTool(call.arguments)
             case "long_agent_capability_matrix":
                 return longAgentCapabilityMatrixTool(call.arguments)
+            case "goal_workflow_catalog":
+                return goalWorkflowCatalogTool(call.arguments)
+            case "chat_continuity_start":
+                return try chatContinuityStartTool(call.arguments)
+            case "browser_business_start":
+                return try browserBusinessStartTool(call.arguments)
+            case "document_message_start":
+                return try documentMessageStartTool(call.arguments)
+            case "resident_autopilot_start":
+                return try residentAutopilotStartTool(call.arguments)
+            case "cockpit_operator_board":
+                return cockpitOperatorBoardTool(call.arguments)
             case "background_native_kernel":
                 return backgroundNativeKernelTool(call.arguments)
             case "background_driver_probe":
@@ -1881,6 +1969,8 @@ final class ToolRegistry {
                 return try learnWorkflowFinalizeTool(call.arguments)
             case "learn_workflow_list":
                 return learnWorkflowListTool(call.arguments)
+            case "learn_workflow_reuse_plan":
+                return try learnWorkflowReusePlanTool(call.arguments)
             case "finder_list_directory":
                 return try finderListDirectory(call.arguments)
             case "finder_file_info":
@@ -4771,7 +4861,7 @@ final class ToolRegistry {
         if effect.contains("message") || appText.contains("wechat") || appText.contains("lark") || appText.contains("feishu") || appText.contains("qq") {
             return try appVerifierEvaluateChat(args: args, planData: data, target: target, value: value, appText: appText)
         }
-        if effect.contains("file_created") || effect.contains("document_exported") || effect.contains("pdf") || effect.contains("path_opened") {
+        if effect.contains("file created") || effect.contains("document exported") || effect.contains("file saved") || effect.contains("pdf") || effect.contains("path opened") {
             let checkPath = path.isEmpty ? value.expandingTildeInPath : path
             guard !checkPath.isEmpty else { throw RuntimeError("path or value is required for file/document verification") }
             let exists = FileManager.default.fileExists(atPath: checkPath)
@@ -5192,6 +5282,7 @@ final class ToolRegistry {
 
     private func backgroundDriverDispatchTool(_ args: [String: Any]) throws -> ToolResult {
         var data = try BackgroundDriverBridge.dispatch(args: args)
+        enrichBackgroundDispatchData(&data, args: args)
         guard (bool(args["dry_run"]) ?? true) == false,
               data["execution_mode"] == "builtin_tool_runtime"
         else {
@@ -5222,6 +5313,23 @@ final class ToolRegistry {
             error: result.success ? nil : (result.error ?? "background_driver_failed"),
             suggestion: result.suggestion
         )
+    }
+
+    private func enrichBackgroundDispatchData(_ data: inout [String: String], args: [String: Any]) {
+        guard data["selected_driver"] == "semantic_app_adapter" else { return }
+        let plan = AppSkillRuntime.actionPlan(
+            query: string(args["query"]) ?? string(args["goal"]) ?? "",
+            appName: string(args["app_name"]) ?? "",
+            bundleID: string(args["bundle_id"]) ?? "",
+            action: string(args["action"]) ?? "observe",
+            arguments: args
+        )
+        data["app_skill_action_plan"] = jsonStringValue(plan)
+        data["app_skill_route"] = plan["route"] ?? ""
+        data["app_skill_resolution"] = plan["resolved_action"] ?? ""
+        data["selected_app_skill_tool"] = plan["selected_tool"] ?? ""
+        data["adapter_payload_preview"] = plan["adapter_payload_preview"] ?? ""
+        data["adapter_protocol"] = plan["adapter_protocol"] ?? ""
     }
 
     private func executeBuiltinBackgroundDriver(driver: String, args: [String: Any]) throws -> ToolResult {
@@ -5282,17 +5390,30 @@ final class ToolRegistry {
             appName: string(args["app_name"]) ?? "",
             bundleID: string(args["bundle_id"]) ?? ""
         )
+        let resolved = AppSkillRuntime.resolveAction(route: route, action: action, arguments: args)
+        let adapterArgs = resolved?.arguments ?? args
         if route.entrypoints["adapter"]?.isEmpty == false {
             let adapterResult = try AppSkillRuntime.executeAdapter(
                 query: string(args["query"]) ?? string(args["goal"]) ?? "",
                 appName: string(args["app_name"]) ?? "",
                 bundleID: string(args["bundle_id"]) ?? "",
                 action: action,
-                arguments: args
+                arguments: adapterArgs
             )
             if adapterResult.success || route.tools.isEmpty {
                 return adapterResult
             }
+        }
+        if let resolved {
+            guard resolved.tool != "background_driver_dispatch" else {
+                return ToolResult(success: false, evidence: "App skill route points back to background driver dispatch.", data: route.dictionary, error: "app_skill_recursive_route")
+            }
+            let result = execute(ToolCall(id: "background-driver", name: resolved.tool, arguments: resolved.arguments, raw: [:]))
+            var data = result.data
+            data["app_skill_route"] = jsonStringValue(route.dictionary)
+            data["app_skill_resolution"] = jsonStringValue(resolved.dictionary)
+            data["selected_app_skill_tool"] = resolved.tool
+            return ToolResult(success: result.success, evidence: "Executed app skill semantic action \(resolved.tool): \(result.evidence)", data: data, error: result.error, suggestion: result.suggestion)
         }
         let candidates = route.tools.filter { tool in
             let normalized = normalizeForSearch(tool)
@@ -5568,8 +5689,44 @@ final class ToolRegistry {
     private func longAgentCapabilityMatrixTool(_ args: [String: Any]) -> ToolResult {
         ToolResult(
             success: true,
-            evidence: "Loaded 10-layer long-agent capability matrix.",
+            evidence: "Loaded long-agent capability matrix.",
             data: LongAgentCapabilityKernel.matrix(goal: string(args["goal"]) ?? "")
+        )
+    }
+
+    private func goalWorkflowCatalogTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Loaded long-automation workflow catalog.",
+            data: LongAutomationWorkflowStore.catalog(goal: string(args["goal"]) ?? "")
+        )
+    }
+
+    private func chatContinuityStartTool(_ args: [String: Any]) throws -> ToolResult {
+        let data = try LongAutomationWorkflowStore.chatContinuity(args: args)
+        return ToolResult(success: true, evidence: "Created continuous chat workflow.", data: data)
+    }
+
+    private func browserBusinessStartTool(_ args: [String: Any]) throws -> ToolResult {
+        let data = try LongAutomationWorkflowStore.browserBusiness(args: args)
+        return ToolResult(success: true, evidence: "Created Chrome business workflow.", data: data)
+    }
+
+    private func documentMessageStartTool(_ args: [String: Any]) throws -> ToolResult {
+        let data = try LongAutomationWorkflowStore.documentMessage(args: args)
+        return ToolResult(success: true, evidence: "Created document-to-message workflow.", data: data)
+    }
+
+    private func residentAutopilotStartTool(_ args: [String: Any]) throws -> ToolResult {
+        let data = try LongAutomationWorkflowStore.residentAutopilot(args: args)
+        return ToolResult(success: true, evidence: "Created resident autopilot workflow.", data: data)
+    }
+
+    private func cockpitOperatorBoardTool(_ args: [String: Any]) -> ToolResult {
+        ToolResult(
+            success: true,
+            evidence: "Built cockpit operator board.",
+            data: LongAutomationWorkflowStore.cockpitOperatorBoard(runID: string(args["run_id"]), limit: int(args["limit"]) ?? 20)
         )
     }
 

@@ -587,7 +587,9 @@ struct E2ERunner {
                 let recipeProgram = tools.execute(ToolCall(id: "eval", name: "recipe_program_compile", arguments: ["id": "create-calendar-event"], raw: [:]))
                 let recipeStable = tools.execute(ToolCall(id: "eval", name: "recipe_stabilize_program", arguments: ["id": "create-calendar-event", "goal": store.goal], raw: [:]))
                 let recipeInfer = tools.execute(ToolCall(id: "eval", name: "recipe_schema_infer", arguments: ["run_id": store.runID, "recipe_id": "eval-long-platform-recipe"], raw: [:]))
+                let recipeReuse = tools.execute(ToolCall(id: "eval", name: "learn_workflow_reuse_plan", arguments: ["goal": "创建并验证日历事件", "app_name": "Calendar", "limit": 3], raw: [:]))
                 let modelStack = tools.execute(ToolCall(id: "eval", name: "computer_use_model_stack", arguments: ["goal": store.goal, "app": "Chrome"], raw: [:]))
+                let providerPlan = tools.execute(ToolCall(id: "eval", name: "computer_use_provider_plan", arguments: ["goal": store.goal, "app": "Chrome"], raw: [:]))
                 let visualStrategy = tools.execute(ToolCall(id: "eval", name: "visual_perception_strategy", arguments: ["surface": "canvas", "query": "icon button"], raw: [:]))
                 let visualRegistry = tools.execute(ToolCall(id: "eval", name: "visual_grounder_model_registry", arguments: [:], raw: [:]))
                 let visualCache = tools.execute(ToolCall(id: "eval", name: "visual_ui_map_cache", arguments: ["image_path": "/private/tmp/eval.png", "query": "button", "candidates_json": "[]"], raw: [:]))
@@ -601,7 +603,7 @@ struct E2ERunner {
                 let results = [
                     role, handoff, browserSession, browserPlan, browserAgentPlan, browserContract, skillRoute, skillCore, skillExport,
                     memory, shadow, shadowPolicy, shadowCapture, cockpitCommand, cockpit, cockpitReplay, trajectoryProduct, resumePoints,
-                    branch, recipeProgram, recipeStable, recipeInfer, modelStack, visualStrategy, visualRegistry, visualCache, dispatch,
+                    branch, recipeProgram, recipeStable, recipeInfer, recipeReuse, modelStack, providerPlan, visualStrategy, visualRegistry, visualCache, dispatch,
                     nativeKernel, residentPlan, residentTick, schedule, daemon
                 ]
                 let inferredRecipeValid = (recipeInfer.data["compile"] ?? "").contains(#""valid":"true""#)
@@ -612,6 +614,8 @@ struct E2ERunner {
                     (cockpitCommand.data["status"] ?? "") == "applied" &&
                     (nativeKernel.data["kernel_contract"] ?? "").contains("no-cursor") &&
                     (residentTick.data["status"] ?? "") == "advanced" &&
+                    (recipeReuse.data["schema"] ?? "") == "aios.learn.workflow.reuse_plan.v1" &&
+                    (providerPlan.data["schema"] ?? "") == "aios.computer_use.provider_plan.v1" &&
                     inferredRecipeValid
                 let failed = results.filter { !$0.success }.map { $0.error ?? $0.evidence }.joined(separator: " | ")
                 return ToolResult(success: ok, evidence: ok ? "All 10 long-agent platform kernels are callable and integrated." : "Long-agent platform integration failed: \(failed)", data: [
@@ -648,6 +652,7 @@ struct E2ERunner {
                     ToolCall(id: "eval", name: "recipe_learn_recipe", arguments: ["recipe_id": "eval-parity-learned", "source_run_id": store.runID], raw: [:]),
                     ToolCall(id: "eval", name: "recipe_stabilize_program", arguments: ["id": "eval-parity-learned-program", "goal": store.goal], raw: [:]),
                     ToolCall(id: "eval", name: "recipe_program_select", arguments: ["goal": "inspect Package.swift", "limit": 5], raw: [:]),
+                    ToolCall(id: "eval", name: "learn_workflow_reuse_plan", arguments: ["goal": "inspect Package.swift", "app_name": "Finder", "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_state", arguments: ["run_id": store.runID, "limit": 5], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_watch", arguments: ["goal": "continue after Package.swift appears", "condition": "file_exists", "value": "Package.swift", "title": "Parity watch"], raw: [:]),
                     ToolCall(id: "eval", name: "resident_agent_plan", arguments: ["goal": store.goal, "app_name": "Finder", "surface": "native"], raw: [:]),
@@ -673,17 +678,21 @@ struct E2ERunner {
                     ToolCall(id: "eval", name: "agent_harness_dispatch", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "app_name": "Chrome", "surface": "canvas"], raw: [:]),
                     ToolCall(id: "eval", name: "agent_harness_tick", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "current_role": "planner", "evidence": "parity eval"], raw: [:]),
                     ToolCall(id: "eval", name: "computer_use_model_stack", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "app": "Chrome"], raw: [:]),
+                    ToolCall(id: "eval", name: "computer_use_provider_plan", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务", "app": "Chrome"], raw: [:]),
                     ToolCall(id: "eval", name: "long_agent_capability_matrix", arguments: ["goal": "持续在 Chrome 和 Figma 完成任务"], raw: [:]),
                     ToolCall(id: "eval", name: "long_task_interrupt", arguments: ["run_id": store.runID, "instruction": "continue with learned recipe", "mode": "replan"], raw: [:])
                 ]
                 let results = calls.map { tools.execute($0) }
+                let capabilityCount = int(results.first { $0.data["schema"] == "aios.long_agent.capability_matrix.v1" }?.data["complete_count"]) ?? 0
                 let ok = results.allSatisfy(\.success) &&
                     (results.first { $0.data["schema"] == "aios.background.driver.dispatch.v1" }?.data["request"] ?? "").contains("must_not_move_cursor") &&
                     (results.first { $0.data["schema"] == "aios.background.native_kernel.v1" }?.data["kernel_contract"] ?? "").contains("no-cursor") &&
                     (results.first { $0.data["schema"] == "aios.recipe.learn_once.v1" }?.data["ready_for_reuse"] ?? "") == "true" &&
                     (results.first { $0.data["schema"] == "aios.recipe.stability.v1" }?.data["ready_for_permanent_reuse"] ?? "") == "true" &&
+                    (results.first { $0.data["schema"] == "aios.learn.workflow.reuse_plan.v1" }?.data["primary_recommendation"] ?? "").isEmpty == false &&
+                    (results.first { $0.data["schema"] == "aios.computer_use.provider_plan.v1" }?.data["role_routes"] ?? "").contains("runtime_operator") &&
                     (results.first { $0.data["schema"] == "aios.agent.harness.plan.v1" }?.data["route"] ?? "").contains("planner") &&
-                    (results.first { $0.data["schema"] == "aios.long_agent.capability_matrix.v1" }?.data["complete_count"] ?? "") == "10"
+                    capabilityCount >= 10
                 let failed = zip(calls, results).filter { !$0.1.success }.map { "\($0.0.name):\($0.1.error ?? $0.1.evidence)" }.joined(separator: " | ")
                 return ToolResult(success: ok, evidence: ok ? "All open-source parity kernels are integrated." : "Parity kernel integration failed: \(failed)", data: [
                     "run_id": store.runID,
@@ -696,6 +705,68 @@ struct E2ERunner {
                     (definition["function"] as? [String: Any])?["name"] as? String
                 }))
                 return ToolResult(success: !decision.allowed, evidence: decision.reason)
+            },
+            EvalCase(id: "p0-side-effect-ledger", title: "Exactly-once side effect ledger blocks submitted duplicates but allows failed retry") {
+                let runID = "eval-sidefx-\(UUID().uuidString)"
+                let call = ToolCall(id: "eval", name: "wechat_send_text", arguments: ["recipient": "Example Contact", "text": "hello"], raw: [:])
+                guard let intent = SideEffectLedgerStore.intent(for: call) else {
+                    return ToolResult(success: false, evidence: "Could not classify side effect.", error: "side_effect_intent_missing")
+                }
+                try SideEffectLedgerStore.recordSubmitted(intent: intent, runID: runID)
+                let blocked = SideEffectLedgerStore.duplicateDecision(for: intent, runID: runID)
+                try SideEffectLedgerStore.recordResult(intent: intent, runID: runID, result: ToolResult(success: false, evidence: "send failed", error: "eval"))
+                let retry = SideEffectLedgerStore.duplicateDecision(for: intent, runID: runID)
+                return ToolResult(success: !blocked.allowed && retry.allowed, evidence: "submitted duplicate=\(blocked.allowed ? "allowed" : "blocked"), failed retry=\(retry.allowed ? "allowed" : "blocked")", data: [
+                    "intent": jsonStringValue(intent.dictionary),
+                    "records": jsonStringValue(SideEffectLedgerStore.records(runID: runID).map(\.dictionary))
+                ])
+            },
+            EvalCase(id: "p0-verifier-plans", title: "Chat, file, and Calendar verifier plans expose pre/post checks and side-effect policy") {
+                let tools = ToolRegistry()
+                let chat = tools.execute(ToolCall(id: "eval", name: "app_verifier_plan", arguments: ["app_name": "WeChat", "effect": "message_sent", "target": "Example Contact", "value": "hello"], raw: [:]))
+                let file = tools.execute(ToolCall(id: "eval", name: "app_verifier_plan", arguments: ["app_name": "Finder", "effect": "file_created", "path": "/private/tmp/aios-p0-verifier.txt"], raw: [:]))
+                let calendar = tools.execute(ToolCall(id: "eval", name: "app_verifier_plan", arguments: ["app_name": "Calendar", "effect": "calendar_event_created", "target": "AIOS Review"], raw: [:]))
+                let ok = [chat, file, calendar].allSatisfy(\.success) &&
+                    (chat.data["side_effect_policy"] ?? "").contains("exactly_once_per_run") &&
+                    (file.data["side_effect_policy"] ?? "").contains("verified_once_per_run") &&
+                    (calendar.data["pre_check_sequence"] ?? "").contains("calendar_find_events") &&
+                    (calendar.data["post_check_sequence"] ?? "").contains("calendar_find_events") &&
+                    !(chat.data["idempotency_key_fields"] ?? "").isEmpty
+                return ToolResult(success: ok, evidence: ok ? "Verifier plans include pre/post/idempotency contracts." : "Verifier plan contract missing fields.", data: [
+                    "chat": jsonStringValue(chat.data),
+                    "file": jsonStringValue(file.data),
+                    "calendar": jsonStringValue(calendar.data)
+                ], error: ok ? nil : "p0_verifier_plan_incomplete")
+            },
+            EvalCase(id: "p0-verifier-evidence-json", title: "Verifier evaluator accepts prior evidence for chat, file, and Calendar contracts") {
+                let tools = ToolRegistry()
+                let temp = URL(fileURLWithPath: "/private/tmp/aios-p0-verifier-\(UUID().uuidString).txt")
+                try "hello".write(to: temp, atomically: true, encoding: .utf8)
+                defer { try? FileManager.default.removeItem(at: temp) }
+                let chatEvidence = jsonStringValue([
+                    "verified": "true",
+                    "verified_recipient": "true",
+                    "verified_message": "true",
+                    "recipient": "Example Contact",
+                    "message": "hello"
+                ])
+                let calendarEvidence = jsonStringValue([
+                    "verified": "true",
+                    "title": "AIOS Review",
+                    "events": [["title": "AIOS Review"]]
+                ])
+                let chat = tools.execute(ToolCall(id: "eval", name: "app_verifier_evaluate", arguments: ["app_name": "WeChat", "effect": "message_sent", "target": "Example Contact", "value": "hello", "evidence_json": chatEvidence], raw: [:]))
+                let file = tools.execute(ToolCall(id: "eval", name: "app_verifier_evaluate", arguments: ["app_name": "Finder", "effect": "file_created", "path": temp.path], raw: [:]))
+                let calendar = tools.execute(ToolCall(id: "eval", name: "app_verifier_evaluate", arguments: ["app_name": "Calendar", "effect": "calendar_event_created", "target": "AIOS Review", "evidence_json": calendarEvidence], raw: [:]))
+                let ok = chat.success && file.success && calendar.success &&
+                    chat.data["verified"] == "true" &&
+                    file.data["verified"] == "true" &&
+                    calendar.data["verified"] == "true"
+                return ToolResult(success: ok, evidence: ok ? "Prior and filesystem verifier evidence are accepted." : "Verifier evidence-json regression failed.", data: [
+                    "chat": jsonStringValue(chat.data),
+                    "file": jsonStringValue(file.data),
+                    "calendar": jsonStringValue(calendar.data)
+                ], error: ok ? nil : "p0_verifier_evidence_failed")
             },
             EvalCase(id: "chat-completion-gate", title: "Chat delivery cannot complete without message verification") {
                 var state = CompletionContractState(goal: "Send good night to Example Contact in WeChat")

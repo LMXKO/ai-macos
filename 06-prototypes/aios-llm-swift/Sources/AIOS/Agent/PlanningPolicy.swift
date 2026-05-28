@@ -502,8 +502,11 @@ struct CompletionContractState: Codable {
     private static func effectEvidence(call: ToolCall, result: ToolResult) -> CompletionEvidence? {
         let fallbackKind = fallbackEffectKind(call: call, result: result)
         guard let kind = result.data["effect"] ?? fallbackKind else { return nil }
-        let verifiedText = result.data["verified"] ?? result.data["effect_verified"]
-        let verified = bool(verifiedText) ?? fallbackVerified(call: call, result: result, kind: kind)
+        let explicitVerified = MaterialEffectVerificationPolicy.explicitlyVerified(result)
+        let verified = explicitVerified ??
+            (MaterialEffectVerificationPolicy.requiresExplicitVerification(call: call, result: result, kind: kind)
+                ? false
+                : fallbackVerified(call: call, result: result, kind: kind))
         let app = result.data["app"] ?? appName(for: call)
         let target = result.data["target"] ??
             result.data["recipient"] ??
@@ -872,4 +875,3 @@ final class OpenAICompatibleClient {
         return LLMResponse(content: message["content"] as? String, toolCalls: toolCalls, rawMessage: message)
     }
 }
-

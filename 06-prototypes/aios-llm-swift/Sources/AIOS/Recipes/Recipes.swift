@@ -255,6 +255,69 @@ struct RecipeStore {
             steps: [
                 RecipeStep(id: "S1", title: "Create event", tool: "calendar_create_event", arguments: ["title": "{{title}}", "start": "{{start}}", "end": "{{end}}", "notes": "{{notes}}"], verifyTool: "calendar_find_events", verifyArguments: ["title": "{{title}}", "days": "30"], retries: 1, verifyExpression: "success && evidence contains Created")
             ]
+        ),
+        Recipe(
+            id: "continuous-chat-followup",
+            title: "Continue a chat conversation",
+            goalTemplate: "在{{app}}里和{{recipient}}围绕{{objective}}持续沟通。先打开并观察聊天，再发送{{message_text}}，然后验证最近消息。",
+            requiredParams: ["app", "recipient", "objective", "message_text"],
+            notes: "Reusable bounded chat turn for resident long-running conversation loops.",
+            steps: [
+                RecipeStep(
+                    id: "S1",
+                    title: "Open or search chat",
+                    tool: "{{chat_prefix}}_search_chat",
+                    arguments: ["name": "{{recipient}}"],
+                    retries: 1,
+                    fallbackTools: [
+                        RecipeFallback(tool: "{{chat_prefix}}_open", arguments: [:])
+                    ]
+                ),
+                RecipeStep(
+                    id: "S2",
+                    title: "Send bounded reply",
+                    tool: "{{chat_prefix}}_send_text",
+                    arguments: ["{{recipient_key}}": "{{recipient}}", "text": "{{message_text}}"],
+                    verifyTool: "{{chat_prefix}}_verify_recent_message",
+                    verifyArguments: ["text": "{{message_probe}}"],
+                    retries: 1,
+                    verifyExpression: "success && data.verified_message contains true"
+                ),
+                RecipeStep(
+                    id: "S3",
+                    title: "Remember chat outcome",
+                    tool: "memory_remember",
+                    arguments: ["kind": "workflow_hint", "scope": "chat", "app": "{{app}}", "key": "{{recipient}}", "value": "{{objective}} -> {{message_probe}}"],
+                    verifyExpression: "success"
+                )
+            ]
+        ),
+        Recipe(
+            id: "browser-business-task",
+            title: "Operate a Chrome business web task",
+            goalTemplate: "打开{{url}}并在 Chrome 里完成业务任务：{{objective}}。用 CDP observe/act/extract/wait 推进并验证页面状态。",
+            requiredParams: ["url", "objective"],
+            notes: "Stagehand-style browser recipe for authenticated business web apps. Keep selector repair evidence in the browser runtime cache.",
+            steps: [
+                RecipeStep(id: "S1", title: "Register browser session", tool: "browser_runtime_session", arguments: ["name": "{{browser_session}}", "url": "{{url}}", "status": "planned"], verifyExpression: "success"),
+                RecipeStep(id: "S2", title: "Launch Chrome CDP", tool: "browser_cdp_launch", arguments: ["url": "{{url}}"], verifyTool: "browser_cdp_status", verifyArguments: [:], retries: 1),
+                RecipeStep(id: "S3", title: "Observe page", tool: "browser_agent_observe", arguments: ["goal": "{{objective}}", "query": "{{browser_query}}"], retries: 1),
+                RecipeStep(id: "S4", title: "Extract business state", tool: "browser_agent_extract", arguments: ["goal": "{{objective}}", "selector": "body", "schema": "{{extraction_schema}}"], retries: 1),
+                RecipeStep(id: "S5", title: "Wait for stable page state", tool: "browser_agent_wait", arguments: ["goal": "{{objective}}", "condition": "network_idle", "value": "750", "timeout": "15"])
+            ]
+        ),
+        Recipe(
+            id: "document-export-and-send",
+            title: "Export a document and send it to a contact",
+            goalTemplate: "用 Finder 找到{{path}}，导出 PDF 到{{outdir}}，再通过{{app}}发给{{recipient}}并验证发送结果。",
+            requiredParams: ["path", "outdir", "app", "recipient"],
+            notes: "Combines Finder, document export, and chat delivery into one reusable workflow.",
+            steps: [
+                RecipeStep(id: "S1", title: "Verify source file", tool: "finder_file_info", arguments: ["path": "{{path}}"], waitCondition: "file_exists", waitValue: "{{path}}", verifyExpression: "success"),
+                RecipeStep(id: "S2", title: "Export PDF", tool: "libreoffice_export_pdf", arguments: ["path": "{{path}}", "outdir": "{{outdir}}"], verifyTool: "finder_file_info", verifyArguments: ["path": "{{pdf_path}}"], waitCondition: "file_exists", waitValue: "{{pdf_path}}", retries: 1),
+                RecipeStep(id: "S3", title: "Stage exported PDF", tool: "{{chat_prefix}}_stage_file", arguments: ["{{recipient_key}}": "{{recipient}}", "path": "{{pdf_path}}"], verifyTool: "{{chat_prefix}}_verify_chat", verifyArguments: ["{{recipient_key}}": "{{recipient}}"], retries: 1),
+                RecipeStep(id: "S4", title: "Send staged PDF", tool: "{{chat_prefix}}_send_staged", arguments: ["{{recipient_key}}": "{{recipient}}"], verifyTool: "{{chat_prefix}}_verify_recent_message", verifyArguments: ["text": "{{pdf_file_name}}"], retries: 1)
+            ]
         )
     ]
 
@@ -276,7 +339,14 @@ struct RecipeStore {
         guard FileManager.default.fileExists(atPath: EventStore.recipesURL.path) else { return [] }
         let urls = try FileManager.default.contentsOfDirectory(at: EventStore.recipesURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
             .filter { $0.pathExtension == "json" }
-        return try urls.map { try JSONDecoder().decode(Recipe.self, from: Data(contentsOf: $0)) }
+        return urls.compactMap { url in
+            guard let data = try? Data(contentsOf: url),
+                  let recipe = try? JSONDecoder().decode(Recipe.self, from: data)
+            else {
+                return nil
+            }
+            return recipe
+        }
             .sorted { $0.id < $1.id }
     }
 
@@ -324,7 +394,15 @@ struct RecipeStore {
                 matched.insert(keyword)
             }
 
-            if score == 0 { return nil }
+            if recipe.id == "document-export-and-send", !isDeliveryGoal(goalText) {
+                score -= 8
+            }
+            if recipe.id == "export-document-pdf", isExportOnlyPDFGoal(goalText) {
+                score += 8
+                matched.insert("export-only")
+            }
+
+            if score <= 0 { return nil }
             return RecipeSuggestion(recipe: recipe, score: score, matchedTerms: matched.sorted())
         }
         return scored
@@ -1004,6 +1082,7 @@ struct RecipeStore {
                     .appendingPathComponent(url.deletingPathExtension().lastPathComponent)
                     .appendingPathExtension("pdf")
                     .path
+                resolved["pdf_file_name"] = URL(fileURLWithPath: resolved["pdf_path"] ?? "").lastPathComponent
             }
         }
         let app = (resolved["app"] ?? "wechat").lowercased()
@@ -1023,6 +1102,13 @@ struct RecipeStore {
             resolved["message_text"] = "关于\(topic)的计划：\n1. 明确目标和使用场景\n2. 梳理数据、产品、技术和合规路径\n3. 制定里程碑和交付物\n4. 同步关键风险和下一步行动"
         }
         resolved["message_probe"] = String((resolved["message_text"] ?? "").prefix(24))
+        if resolved["objective"] == nil { resolved["objective"] = resolved["topic"] ?? resolved["goal"] ?? "完成任务" }
+        if resolved["browser_query"] == nil { resolved["browser_query"] = resolved["objective"] ?? "" }
+        if resolved["extraction_schema"] == nil { resolved["extraction_schema"] = "title,url,text,links,forms,downloads,status" }
+        if resolved["expected_text"] == nil { resolved["expected_text"] = resolved["browser_query"] ?? resolved["objective"] ?? "" }
+        if resolved["browser_session"] == nil {
+            resolved["browser_session"] = normalizeID(resolved["url"] ?? resolved["objective"] ?? "browser-task")
+        }
         return resolved
     }
 
@@ -1061,7 +1147,7 @@ struct RecipeStore {
                 let trimmed = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return [] }
                 if trimmed.count <= 8 { return [trimmed] }
-                let phrases = ["发送", "发给", "文件", "附件", "计划", "方案", "同步", "导出", "转换", "文档", "pdf", "日历", "日程", "会议", "提醒", "微信", "飞书", "qq"]
+                let phrases = ["发送", "发给", "文件", "附件", "计划", "方案", "同步", "导出", "转换", "文档", "pdf", "日历", "日程", "会议", "提醒", "微信", "飞书", "qq", "持续", "沟通", "网页", "业务", "chrome", "browser"]
                 return [trimmed] + phrases.filter { trimmed.contains($0) }
             }
     }
@@ -1076,8 +1162,23 @@ struct RecipeStore {
             return ["pdf", "导出", "转成", "转换", "文档", "doc", "docx", "word", "保存"]
         case "create-calendar-event":
             return ["calendar", "日历", "日程", "会议", "提醒", "event", "schedule", "创建"]
+        case "continuous-chat-followup":
+            return ["chat", "聊天", "沟通", "持续", "followup", "follow-up", "reply", "回复", "wechat", "微信", "lark", "飞书", "qq"]
+        case "browser-business-task":
+            return ["browser", "chrome", "web", "网页", "业务", "表单", "提取", "下载", "selector", "cdp", "网站"]
+        case "document-export-and-send":
+            return ["文档", "文件", "pdf", "导出", "发送", "发给", "附件", "finder", "libreoffice", "wps", "微信", "飞书", "qq"]
         default:
             return []
         }
+    }
+
+    private static func isDeliveryGoal(_ text: String) -> Bool {
+        ["发送", "发给", "同步", "分享", "联系人", "聊天", "微信", "飞书", "lark", "wechat", "qq", "contact", "send", "message"].contains { text.contains($0) }
+    }
+
+    private static func isExportOnlyPDFGoal(_ text: String) -> Bool {
+        let wantsPDF = text.contains("pdf") || text.contains("导出") || text.contains("转换") || text.contains("转成")
+        return wantsPDF && !isDeliveryGoal(text)
     }
 }

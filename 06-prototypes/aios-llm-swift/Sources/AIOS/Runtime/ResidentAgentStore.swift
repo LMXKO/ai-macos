@@ -82,24 +82,18 @@ struct ResidentAgentStore {
 
     static func plan(goal: String, app: String = "", surface: String = "", wakeAfterSeconds: Int = 0) throws -> [String: String] {
         let route = AgentRoleSystem.plan(goal: goal, app: app, surface: surface).compactMap { $0["id"] }
+        var nodes = LongAutomationWorkflowStore.residentNodes(goal: goal, app: app, surface: surface, wakeAfterSeconds: wakeAfterSeconds > 0 ? wakeAfterSeconds : 60)
+        if wakeAfterSeconds > 0, !nodes.isEmpty {
+            let wake = isoDateString(Date().addingTimeInterval(TimeInterval(wakeAfterSeconds)))
+            nodes[0].status = "waiting"
+            nodes[0].waitCondition = "time"
+            nodes[0].waitValue = wake
+            nodes[0].notBefore = wake
+        }
         let graph = try TaskGraphStore.create(
             title: "Resident: \(goal)",
             goal: goal,
-            nodes: [
-                DurableTaskNode(
-                    id: "R1",
-                    title: "Resident agent tick",
-                    goal: goal,
-                    status: wakeAfterSeconds > 0 ? "waiting" : "queued",
-                    dependsOn: [],
-                    runID: nil,
-                    waitCondition: wakeAfterSeconds > 0 ? "time" : nil,
-                    waitValue: wakeAfterSeconds > 0 ? isoDateString(Date().addingTimeInterval(TimeInterval(wakeAfterSeconds))) : nil,
-                    notBefore: wakeAfterSeconds > 0 ? isoDateString(Date().addingTimeInterval(TimeInterval(wakeAfterSeconds))) : nil,
-                    attempts: 0,
-                    updatedAt: isoDateString(Date())
-                )
-            ]
+            nodes: nodes
         )
         let now = isoDateString(Date())
         let session = ResidentAgentSession(
@@ -122,7 +116,7 @@ struct ResidentAgentStore {
             "schema": "aios.resident_agent.plan.v1",
             "session": jsonStringValue(session.dictionary),
             "task_graph": jsonStringValue(graph.dictionary),
-            "runtime_contract": "durable session + task graph + daemon ticks + cockpit interrupts + memory context pack; each tick observes state, advances one role, schedules ready graph nodes, and records a durable observation"
+            "runtime_contract": "durable session + workflow-aware task graph + daemon ticks + cockpit interrupts + memory context pack; each tick observes state, advances one role, schedules ready graph nodes, and records a durable observation"
         ]
     }
 

@@ -54,7 +54,7 @@ struct AgentRoleSystem {
             id: "planner",
             title: "Planner",
             mission: "Decompose the user goal into durable phases, pick recipes/skills first, and choose explicit stop conditions.",
-            tools: ["computer_use_strategy", "computer_use_model_stack", "long_agent_capability_matrix", "recipe_suggest", "app_skill_suggest", "memory_context_pack", "task_graph_create"],
+            tools: ["goal_workflow_catalog", "chat_continuity_start", "browser_business_start", "document_message_start", "resident_autopilot_start", "computer_use_strategy", "computer_use_model_stack", "computer_use_provider_plan", "long_agent_capability_matrix", "learn_workflow_reuse_plan", "recipe_suggest", "app_skill_suggest", "memory_context_pack", "task_graph_create"],
             inputs: ["goal", "memory_context", "available_skills"],
             outputs: ["task_plan", "role_route", "task_graph"],
             handoffs: ["recipe_runner", "browser_specialist", "app_skill_specialist", "executor", "runtime_operator"]
@@ -90,7 +90,7 @@ struct AgentRoleSystem {
             id: "recipe_runner",
             title: "Recipe Runner",
             mission: "Compile, adapt, and execute reusable workflow programs before falling back to manual app control.",
-            tools: ["recipe_program_compile", "recipe_stabilize_program", "recipe_execute_adaptive", "recipe_generalize", "recipe_repair_hint"],
+            tools: ["learn_workflow_reuse_plan", "recipe_program_select", "recipe_program_compile", "recipe_stabilize_program", "recipe_execute_adaptive", "recipe_generalize", "recipe_repair_hint"],
             inputs: ["recipe_id", "params", "task_context"],
             outputs: ["recipe_result", "repair_hint", "promoted_recipe"],
             handoffs: ["executor", "memory_curator"]
@@ -117,7 +117,7 @@ struct AgentRoleSystem {
             id: "runtime_operator",
             title: "Runtime Operator",
             mission: "Keep long tasks alive with durable queues, graph ticks, pauses, feedback, and resume packets.",
-            tools: ["resident_agent_plan", "resident_agent_tick", "resident_agent_status", "long_run_daemon_tick", "long_run_daemon_status", "task_graph_tick", "cockpit_command", "cockpit_live_state"],
+            tools: ["resident_autopilot_start", "resident_agent_plan", "resident_agent_tick", "resident_agent_status", "long_run_daemon_tick", "long_run_daemon_status", "task_graph_tick", "cockpit_operator_board", "cockpit_command", "cockpit_live_state"],
             inputs: ["task_graph", "queue", "user_commands"],
             outputs: ["scheduled_runs", "pause_resume_state", "runtime_report"],
             handoffs: ["planner", "executor", "memory_curator"]
@@ -146,6 +146,14 @@ struct AgentRoleSystem {
         var route = ["planner"]
         if text.contains("browser") || text.contains("chrome") || text.contains("web") || text.contains("http") {
             route.append("browser_specialist")
+        }
+        if text.contains("wechat") || text.contains("微信") || text.contains("lark") || text.contains("飞书") || text.contains("qq") || text.contains("聊天") || text.contains("沟通") {
+            route.append("app_skill_specialist")
+            route.append("runtime_operator")
+        }
+        if text.contains("pdf") || text.contains("文档") || text.contains("文件") || text.contains("finder") {
+            route.append("recipe_runner")
+            route.append("app_skill_specialist")
         }
         if text.contains("recipe") || text.contains("repeat") || text.contains("again") || text.contains("复用") || text.contains("流程") {
             route.append("recipe_runner")

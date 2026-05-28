@@ -88,6 +88,14 @@ struct ToolServiceCatalog {
                 executionBoundary: "ResidentAgentStore + LongRunDaemonStore + TaskGraphStore + RoutineStore"
             ),
             service(
+                id: "goal-workflows",
+                title: "Goal-Oriented Workflow Packs",
+                module: "Workflows",
+                prefixes: ["goal_workflow_", "chat_continuity_", "browser_business_", "document_message_"],
+                names: names,
+                executionBoundary: "LongAutomationWorkflowStore + TaskGraphStore + ResidentAgentStore"
+            ),
+            service(
                 id: "cockpit",
                 title: "Cockpit, Session, Replay",
                 module: "Platform/Trajectory",

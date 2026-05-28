@@ -191,7 +191,9 @@ final class AIOSAppModel: ObservableObject {
     @Published var selectedRunID = ""
     @Published var selectedEvents = ""
     @Published var checkpointText = ""
+    @Published var cockpitSummaryText = ""
     @Published var dashboardText = ""
+    @Published var operatorBoardText = ""
     @Published var trajectoryText = ""
     @Published var replayPlanText = ""
     @Published var strategyText = ""
@@ -217,11 +219,19 @@ final class AIOSAppModel: ObservableObject {
                 selectedRunID = first.id
             }
             loadSelected()
+            cockpitSummaryText = jsonStringValue(CockpitDashboardStore.liveSummary(runID: selectedRunID.isEmpty ? nil : selectedRunID, limit: 20))
+            operatorBoardText = jsonStringValue(LongAutomationWorkflowStore.cockpitOperatorBoard(runID: selectedRunID.isEmpty ? nil : selectedRunID, limit: 20))
             memoryText = jsonStringValue(MemoryStore.recent(limit: 12).map(\.dictionary))
             appSkillsText = jsonStringValue(AppSkillStore.list().map(\.dictionary))
             routinesText = jsonStringValue(RoutineStore.status(limit: 20))
             verifierText = jsonStringValue(AppVerifierStore.list(limit: 20).map(\.dictionary))
-            learningWorkflowText = jsonStringValue(LearnWorkflowStore.list(limit: 20).map(\.dictionary))
+            let activeGoal = selectedRunID.isEmpty ? goal : ((try? EventStore.readSummary(runID: selectedRunID).goal) ?? goal)
+            if !activeGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let reusePlan = try? LearnWorkflowStore.reusePlan(goal: activeGoal, limit: 5) {
+                learningWorkflowText = jsonStringValue(reusePlan)
+            } else {
+                learningWorkflowText = jsonStringValue(LearnWorkflowStore.list(limit: 20).map(\.dictionary))
+            }
             auditText = AuditLog.readText(limit: 80)
             evalText = E2ERunner.lastRunText()
             let config = try AIOSConfig.load()
@@ -305,7 +315,9 @@ final class AIOSAppModel: ObservableObject {
         guard !selectedRunID.isEmpty else {
             selectedEvents = ""
             checkpointText = ""
+            cockpitSummaryText = jsonStringValue(CockpitDashboardStore.liveSummary(limit: 20))
             dashboardText = ""
+            operatorBoardText = jsonStringValue(LongAutomationWorkflowStore.cockpitOperatorBoard(limit: 20))
             trajectoryText = ""
             replayPlanText = ""
             strategyText = ""
@@ -317,8 +329,18 @@ final class AIOSAppModel: ObservableObject {
             .appendingPathComponent(selectedRunID, isDirectory: true)
             .appendingPathComponent("checkpoint.json")
         checkpointText = (try? String(contentsOf: checkpointURL, encoding: .utf8)) ?? "暂无 checkpoint"
+        cockpitSummaryText = jsonStringValue(CockpitDashboardStore.liveSummary(runID: selectedRunID, limit: 20))
         dashboardText = jsonStringValue(CockpitDashboardStore.dashboard(runID: selectedRunID, limit: 20))
-        strategyText = jsonStringValue(ComputerUseStrategy.suggest(goal: summary?.goal ?? selectedEvents))
+        operatorBoardText = jsonStringValue(LongAutomationWorkflowStore.cockpitOperatorBoard(runID: selectedRunID, limit: 20))
+        let selectedGoal = summary?.goal ?? selectedEvents
+        strategyText = jsonStringValue([
+            "strategy": jsonStringValue(ComputerUseStrategy.suggest(goal: selectedGoal)),
+            "model_stack": jsonStringValue(ComputerUseModelStack.strategy(goal: selectedGoal)),
+            "provider_plan": jsonStringValue(ComputerUseModelStack.providerPlan(goal: selectedGoal))
+        ])
+        if let reusePlan = try? LearnWorkflowStore.reusePlan(goal: selectedGoal, limit: 5) {
+            learningWorkflowText = jsonStringValue(reusePlan)
+        }
         if let events = try? TrajectoryStore.summarize(runID: selectedRunID, limit: 120) {
             trajectoryText = jsonStringValue(events)
         } else {
@@ -503,6 +525,16 @@ struct AIOSAppView: View {
                     }
                     DisclosureGroup("驾驶舱") {
                         VStack(alignment: .leading, spacing: 6) {
+                            Text("Live Summary")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.cockpitSummaryText.isEmpty ? "暂无 live summary" : model.cockpitSummaryText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 90)
                             Text("Dashboard")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -513,8 +545,18 @@ struct AIOSAppView: View {
                                     .textSelection(.enabled)
                             }
                             .frame(height: 110)
+                            Text("Operator Board")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView {
+                                Text(model.operatorBoardText.isEmpty ? "暂无 operator board" : model.operatorBoardText)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                            .frame(height: 110)
                             HStack {
-                                Text("Strategy")
+                                Text("Strategy / Provider")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Spacer()

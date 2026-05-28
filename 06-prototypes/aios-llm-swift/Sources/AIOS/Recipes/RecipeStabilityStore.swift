@@ -2,6 +2,10 @@ import Foundation
 
 struct RecipeStabilityStore {
     static func stabilize(recipeID: String, goal: String = "") throws -> [String: String] {
+        try profile(recipeID: recipeID, goal: goal, promote: true)
+    }
+
+    static func profile(recipeID: String, goal: String = "", promote: Bool = false) throws -> [String: String] {
         let recipe = try RecipeStore.read(recipeID)
         let compiled = try RecipeProgramStore.compile(recipeID: recipeID)
         let records = RecipeLearningEngine.readAll().filter { $0.recipeID == recipeID || $0.programRecipeID == recipeID }
@@ -25,7 +29,7 @@ struct RecipeStabilityStore {
             "version_policy": "promote only valid programs with verification contracts, parameter references, repair hints, and outcome counters; keep prior versions as rollback candidates",
             "adaptation_policy": "resolve app state -> fill params -> check preconditions -> execute adaptive graph -> verify postconditions -> refine success/failure counters"
         ]
-        if score >= 0.80 {
+        if promote && score >= 0.80 {
             _ = try? RecipeStore.recordRunOutcome(recipeID: recipeID, runID: records.first?.runID ?? "stability:\(recipeID)", success: true, notes: "recipe_stabilize_program marked permanent reuse candidate")
         }
         return payload

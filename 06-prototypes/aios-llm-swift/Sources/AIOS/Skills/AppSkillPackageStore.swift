@@ -129,7 +129,7 @@ struct AppSkillPackageStore {
                 #!/bin/sh
                 # AIOS app skill adapter template. Read JSON from stdin and print a JSON object.
                 payload=$(cat)
-                printf '{"success":true,"evidence":"adapter template received request","payload":%s}\\n' "$payload"
+                printf '{"schema":"aios.app_skill.adapter.response.v1","success":true,"evidence":"adapter template received request","payload":%s}\\n' "$payload"
                 """
                 try template.write(to: adapterURL, atomically: true, encoding: .utf8)
                 try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: adapterURL.path)
@@ -145,8 +145,11 @@ struct AppSkillPackageStore {
         Optional executable adapters live under `adapters/` and receive an AIOS JSON payload on stdin:
 
         - `action`: observe, ground, act, verify, wait, click, type, or app-specific verbs
-        - `query`, `selector`, `text`, `target`, and `context`
-        - stdout should be a JSON object with `success`, `evidence`, and optional data fields
+        - `arguments`: normalized arguments selected by `app_skill_resolve_action`
+        - `raw_arguments`: original caller arguments
+        - `resolved_action`: selected built-in tool/arguments when applicable
+        - stdout must be one JSON object with `success` and `evidence`
+        - optional stdout fields: `error`, `suggestion`, `effect`, `target`, `value`, `verified`, `artifacts`, `post_observation`
         """
         try readme.write(to: dir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         return package

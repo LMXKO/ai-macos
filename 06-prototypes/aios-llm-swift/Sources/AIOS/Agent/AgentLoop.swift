@@ -303,6 +303,42 @@ final class AgentLoop {
                     }
                 }
 
+                let sideEffectIntent = SideEffectLedgerStore.intent(for: call)
+                if let sideEffectIntent,
+                   bool(call.arguments["allow_duplicate"]) != true {
+                    let sideEffectDecision = SideEffectLedgerStore.duplicateDecision(
+                        for: sideEffectIntent,
+                        runID: eventStore?.runID ?? "adhoc"
+                    )
+                    emitEvent("SideEffectCheck", [
+                        "tool": call.name,
+                        "kind": sideEffectIntent.kind,
+                        "key": sideEffectIntent.key,
+                        "allowed": sideEffectDecision.allowed ? "true" : "false",
+                        "reason": sideEffectDecision.reason
+                    ])
+                    guard sideEffectDecision.allowed else {
+                        let blocked = ToolResult(
+                            success: false,
+                            evidence: "Side effect blocked by exactly-once guard.",
+                            error: sideEffectDecision.reason,
+                            suggestion: "Use verifier/observe tools to check the existing result, or ask the user before retrying with allow_duplicate=true."
+                        )
+                        plan.steps[stepIndex].status = .failed
+                        plan.steps[stepIndex].evidence.append(blocked.evidence)
+                        messages.append(toolMessage(call: call, result: blocked))
+                        emitEvent("Recovery", [
+                            "step_id": currentStep.id,
+                            "reason": sideEffectDecision.reason
+                        ])
+                        saveCheckpoint(goal: goal, plan: plan, round: round, executedActionCount: executedActionCount, submittedExternalSends: submittedExternalSends, verificationState: verificationState, finished: false)
+                        continue
+                    }
+                    if let record = try? SideEffectLedgerStore.recordSubmitted(intent: sideEffectIntent, runID: eventStore?.runID ?? "adhoc") {
+                        emitEvent("SideEffectSubmitted", record.dictionary)
+                    }
+                }
+
                 emitEvent("AppAction", [
                     "tool": call.name,
                     "arguments": jsonLine(call.arguments)
@@ -320,6 +356,9 @@ final class AgentLoop {
                 if Self.isExternalSendTool(call.name), result.data["verified_recipient"] == "true" {
                     let sendKey = Self.externalSendKey(call)
                     if !sendKey.isEmpty { submittedExternalSends.insert(sendKey) }
+                }
+                if let sideEffectIntent {
+                    try? SideEffectLedgerStore.recordResult(intent: sideEffectIntent, runID: eventStore?.runID ?? "adhoc", result: result)
                 }
                 verificationState.record(call: call, result: result)
                 let learnedMemory = MemoryStore.rememberToolResult(call: call, result: result, runID: eventStore?.runID)
@@ -1011,10 +1050,10 @@ final class AgentLoop {
     Prefer dedicated app adapters for Finder, Safari, Chrome, WPS, LibreOffice, Preview, Notes, Mail, Calendar, Reminders, WeChat, Lark, QQ, Tencent Meeting, Baidu Netdisk, ToDesk, Docker, Shortcuts, and IDEs when they match the task.
     Before manual multi-step work, use recipe_suggest or the provided RecipeSuggestions and execute a matching recipe with recipe_execute when the required params are available. If no recipe fits or params are missing, continue manually and gather enough detail to make the workflow learnable.
     Use MemoryContext, SemanticContextPack, memory_recall, memory_semantic_recall, and memory_context_pack for stable user/app/workflow facts and prior episodes that may help the current task. Use memory_remember only for reusable, non-sensitive preferences or automation hints; never store passwords, tokens, keys, payment data, or private secrets.
-    Use computer_use_strategy, computer_use_model_stack, long_agent_capability_matrix, tool_service_catalog, memory_profile, app_skill_suggest, app_verifier_plan, background_native_kernel, background_driver_probe, background_driver_capsule, and background_capabilities when the route is unclear. For browser/web app tasks, prefer browser_agent_contract, browser_agent_plan, browser_agent_observe, browser_agent_act, browser_agent_extract, browser_agent_wait, and CDP tools when an endpoint is available; they can control tabs without cursor/focus and keep selector/observation cache. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background_native_kernel/background_driver_dispatch/background_action or direct CDP/app scripting, app_skill_route/app_skill_execute_adapter, background locator tools, foreground locator tools, visual_grounder_run/visual_ground/visual_analyze, menu/keyboard actions, and raw coordinates last.
+    Use computer_use_strategy, computer_use_model_stack, computer_use_provider_plan, long_agent_capability_matrix, tool_service_catalog, memory_profile, app_skill_suggest, app_verifier_plan, background_native_kernel, background_driver_probe, background_driver_capsule, and background_capabilities when the route is unclear. For browser/web app tasks, prefer browser_agent_contract, browser_agent_plan, browser_agent_observe, browser_agent_act, browser_agent_extract, browser_agent_wait, and CDP tools when an endpoint is available; they can control tabs without cursor/focus and keep selector/observation cache. For apps without a dedicated adapter, use universal macOS tools in this order: app discovery/open files/URLs, background_native_kernel/background_driver_dispatch/background_action or direct CDP/app scripting, app_skill_route/app_skill_execute_adapter, background locator tools, foreground locator tools, visual_grounder_run/visual_ground/visual_analyze, menu/keyboard actions, and raw coordinates last.
     Before acting inside an app, call aios_automation_context or an app-specific observation tool to orient. Prefer aios_find, aios_inspect, aios_read, aios_background_click, aios_background_type, aios_click, aios_type, and aios_wait over coordinate tools. For long-running tasks, try the background tools first because they use AXPress/AXValue only and avoid stealing focus. Keep restore_focus=true unless the task explicitly needs the target app left focused.
     For visual/canvas/icon-heavy interfaces, call visual_grounder_model_registry, visual_grounder_policy, visual_grounder_run, visual_ground, or visual_analyze before visual_click; verify reusable candidates with visual_grounder_verify, and record visual_grounder_feedback when a candidate succeeds or fails.
-    For repeatable workflows, call recipe_program_select/recipe_learn_once/recipe_stabilize_program or learn_workflow_plan/learn_workflow_finalize so successful demonstrations become durable workflow programs.
+    For repeatable workflows, call learn_workflow_reuse_plan first, then recipe_program_select/recipe_learn_once/recipe_stabilize_program or learn_workflow_plan/learn_workflow_finalize so successful demonstrations become durable workflow programs.
     For work that must wait on time or external state, use resident_agent_plan, routine_create, long_task_trigger_create, long_task_watch, or runtime_pause with a resume time instead of busy-waiting through many steps. Use shadow_episode_policy and memory_shadow_capture at long pauses and completions.
 
     After every meaningful action, use returned evidence or observation tools to verify progress. Call step_complete only when a step is verified. Use step_failed or plan_update for recovery. Call task_complete only after all requested delivery is done and verified.
